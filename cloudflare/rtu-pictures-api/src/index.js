@@ -184,6 +184,19 @@ function uploadMetadata(request) {
   return meta;
 }
 
+/**
+ * Objects are stored flat at the bucket root to match the existing RTU inventory
+ * (`2320-RTU-14 (3) (Audit-2026).jpg`), so re-uploading a photo replaces it in place
+ * instead of accumulating duplicates. That means the client chooses the key, so the name
+ * must match the audit-photo shape exactly — otherwise a caller could overwrite an
+ * unrelated object in a bucket shared with QR East Industrial.
+ */
+const AUDIT_PHOTO_NAME = /^[A-Za-z0-9]+-[A-Za-z0-9_-]+ \(\d{1,2}\) \(Audit-\d{4}\)\.(jpg|jpeg|png)$/i;
+
+function isAuditPhotoName(name) {
+  return AUDIT_PHOTO_NAME.test(name);
+}
+
 function clientIp(request) {
   return request.headers.get("CF-Connecting-IP") || "unknown";
 }
@@ -348,6 +361,17 @@ export default {
 
       const key = safeKey(keyName || request.headers.get("X-Filename") || "photo.jpg");
       if (!key) return json(request, { ok: false, error: "Missing filename" }, 400);
+      if (!isAuditPhotoName(key)) {
+        return json(
+          request,
+          {
+            ok: false,
+            error:
+              "Filename must look like '2320-RTU-14 (3) (Audit-2026).jpg'",
+          },
+          400
+        );
+      }
 
       const read = await readUploadBody(request, MAX_UPLOAD_BYTES);
       if (read.error) return read.error;
@@ -361,7 +385,7 @@ export default {
         );
       }
 
-      const objectKey = `uploads/${new Date().toISOString().slice(0, 10)}/${randomHex(4)}-${key}`;
+      const objectKey = key;
       await env.PICTURES.put(objectKey, read.body, {
         httpMetadata: { contentType },
         customMetadata: {

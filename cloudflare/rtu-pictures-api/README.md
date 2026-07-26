@@ -10,17 +10,27 @@ Cloudflare Worker that authenticates field staff and uploads RTU audit photos to
 
 ## Object keys and metadata (for downstream consumers)
 
-Objects are written to `uploads/YYYY-MM-DD/<8-hex>-<safeName>`. The random prefix guarantees
-an upload can never overwrite an existing object, so re-running "Upload all pictures"
-produces new keys for photos already in the bucket — dedupe on `originalName` and keep the
-latest `uploadedAt`.
+Objects are written **flat at the bucket root**, using the filename the app generates:
+
+```
+2320-RTU-14 (3) (Audit-2026).jpg
+```
+
+This matches the existing RTU inventory that QR East Industrial already ingests, so a photo
+re-uploaded by "Upload all pictures" **replaces** the previous copy in place rather than
+accumulating duplicates. Uploading is therefore idempotent per RTU photo slot.
+
+Because the client chooses the key, the Worker only accepts names matching
+`<code>-<RTU label> (<slot>) (Audit-<year>).<jpg|jpeg|png>` and rejects anything else with
+`400`. Without that check, an authenticated caller could overwrite unrelated objects in a
+bucket shared with another system.
 
 Each object carries custom metadata so **QR East Industrial** can map a photo to an RTU
 without parsing the filename:
 
 | Field | Source | Example |
 | --- | --- | --- |
-| `originalName` | Filename the app generated | `12A-RTU-3 (1) (Audit 2026).jpg` |
+| `originalName` | Filename the app generated (same as the object key) | `2320-RTU-14 (3) (Audit-2026).jpg` |
 | `uploadedAt` | Server time at upload | `2026-07-26T22:31:04.512Z` |
 | `buildingId` | Stable building ID (`X-Building-Id`) | `bldg-12a` |
 | `rtuKey` | Stable RTU key (`X-Rtu-Key`) | `RTU_3` |
@@ -38,7 +48,7 @@ retain capture EXIF (GPS, `DateTimeOriginal`, `Software`).
 | Rate limits | Login: 8 req / 60s per `CF-Connecting-IP`. Upload: 60 req / 60s per SHA-256 of bearer token. Exceeded → `429` + `Retry-After: 60`. |
 | Auth | Constant-time password compare. `AUTH_SECRET` is **required** (no fallback to `AUTH_PASSWORD`). Tokens include `iat`, `jti`, and `TOKEN_EPOCH`; bumping the epoch revokes all sessions. TTL: **8 hours**. |
 | CORS | Allowlist only: `capacitor://localhost` (iOS shell), `https://localhost` (Android shell, per `androidScheme: 'https'`), plus the legacy shells' `https://appassets.androidplatform.net` and `rtuapp://app`. Responses include `Vary: Origin` (no `*`). Live reload (`npm run dev:ios`) serves from a LAN address that is deliberately **not** allowlisted — sign-in and upload only work in a normal build. |
-| Uploads | Requires `Content-Length` ≤ 12 MB. MIME from magic bytes (`FF D8 FF` / PNG signature) only — `415` otherwise. Object keys are `uploads/YYYY-MM-DD/<8-hex>-<safeName>`. |
+| Uploads | Requires `Content-Length` ≤ 12 MB. MIME from magic bytes (`FF D8 FF` / PNG signature) only — `415` otherwise. Keys are flat at the bucket root and must match the audit-photo pattern — `400` otherwise. Re-uploading the same RTU photo **overwrites in place** by design, so the pattern check is what stops a caller reaching objects outside that shape. |
 | Methods | Wrong method on known routes → `405`. |
 | Headers | Every response: `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`. |
 

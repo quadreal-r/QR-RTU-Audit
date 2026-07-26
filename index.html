@@ -370,8 +370,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.44';
-const BUILD=55;
+const APP_VER='v1.1.45';
+const BUILD=56;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function cfGetToken(){try{return sessionStorage.getItem(CF_SESSION_KEY)||'';}catch(_){return '';}}
@@ -541,7 +541,7 @@ function rtuPhotoLabel(r){
 function photoFileName(b,r,slot){
   const code=BLDG_PHOTO_CODE[b.id]||buildingNumber(b.name);
   const year=new Date().getFullYear();
-  return code+'-'+rtuPhotoLabel(r)+' ('+(slot+1)+') (Audit '+year+').jpg';
+  return code+'-'+rtuPhotoLabel(r)+' ('+(slot+1)+') (Audit-'+year+').jpg';
 }
 function photoTitle(b,r,slot){
   return photoFileName(b,r,slot).replace(/\.jpg$/i,'');
