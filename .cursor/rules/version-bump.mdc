@@ -5,7 +5,19 @@ alwaysApply: true
 
 # Version bump on every change
 
-Whenever you change `index.html` (or publish the tracker), **always bump the version** before finishing.
+**Always bump the version before finishing — for every change, not just `index.html` ones.**
+
+This covers the whole repo, including changes that never touch the client:
+
+- `index.html` and anything that ships inside it
+- the `cloudflare/rtu-pictures-api` Worker (`src/index.js`, `wrangler.jsonc`)
+- native shell config (`android/`, `ios/`, `capacitor.config.ts`)
+- build/ship scripts, docs, rules, and CI config
+- any deploy or publish, even when no source changed
+
+`APP_VER` / `BUILD` in `index.html` stay the single source of truth, so a Worker-only or
+docs-only change still bumps them. This keeps one number identifying the exact state of the
+whole system — client, Worker, and shells — rather than the client alone.
 
 ## How to bump
 
@@ -22,7 +34,14 @@ Whenever you change `index.html` (or publish the tracker), **always bump the ver
 - Multiple small edits in one user request = **one** bump
 - Separate user requests = separate bumps
 
+## After bumping
+
+Run `npm run sync` so `www/`, the Android assets, and the iOS assets carry the new number,
+then redeploy whatever you touched. A bumped version that was never published is as
+misleading as a stale one.
+
 ## Never
 
 - Ship UI/data/search/filter changes without bumping
+- Ship a Worker, script, or docs change without bumping — the rule is not client-only
 - Leave stale hardcoded `v1.x.x` or `Build N` in the hero or footer
