@@ -1,0 +1,12 @@
+# Fastlane Appfile
+# Fill TEAM / package after Apple Developer enrollment.
+
+# for_platform :ios do
+#   app_identifier("com.quadreal.rtuqr")
+#   apple_id(ENV["APPLE_ID"])
+#   team_id(ENV["APPLE_TEAM_ID"])
+# end
+
+# for_platform :android do
+#   package_name("com.quadreal.rtuqr")
+# end

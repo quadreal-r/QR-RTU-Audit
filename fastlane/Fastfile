@@ -1,0 +1,46 @@
+# Fastlane — optional Mac/CI helper. On Windows prefer `npm run ship:android`
+# which uses Gradle + firebase-tools directly.
+
+default_platform(:android)
+
+platform :android do
+  desc "Build signed release APK and upload to Firebase App Distribution"
+  lane :beta do
+    gradle(
+      project_dir: "android",
+      task: "assemble",
+      build_type: "Release"
+    )
+    firebase_app_distribution(
+      app: ENV["FIREBASE_APP_ID"],
+      service_credentials_file: ENV["FIREBASE_SERVICE_ACCOUNT"] || "firebase-service-account.json",
+      android_artifact_type: "APK",
+      android_artifact_path: "android/app/build/outputs/apk/release/app-release.apk",
+      groups: ENV["FIREBASE_GROUPS"] || "testers"
+    )
+  end
+end
+
+platform :ios do
+  desc "Build and upload to TestFlight (requires paid Apple Developer Program)"
+  lane :beta do
+    api_key = app_store_connect_api_key(
+      key_id: ENV["ASC_KEY_ID"],
+      issuer_id: ENV["ASC_ISSUER_ID"],
+      key_filepath: ENV["ASC_KEY_PATH"] || "AuthKey.p8",
+      duration: 1200,
+      in_house: false
+    )
+    build_app(
+      workspace: "ios/App/App.xcworkspace",
+      scheme: "App",
+      export_method: "app-store",
+      output_directory: "build/ios",
+      output_name: "RTUQRAudit"
+    )
+    upload_to_testflight(
+      api_key: api_key,
+      skip_waiting_for_build_processing: true
+    )
+  end
+end

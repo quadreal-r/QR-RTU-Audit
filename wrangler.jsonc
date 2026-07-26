@@ -1,0 +1,9 @@
+{
+  "name": "rtu-qr-tracker",
+  "compatibility_date": "2026-07-23",
+  "workers_dev": true,
+  "assets": {
+    "directory": "./www",
+    "not_found_handling": "single-page-application"
+  }
+}

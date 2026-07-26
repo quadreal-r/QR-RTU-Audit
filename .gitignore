@@ -23,12 +23,15 @@ package-lock.json.bak
 
 # Capacitor web build output (generated from root index.html + piexif.js)
 /www/
+.dev/
 
 # Android / Gradle
 local.properties
 keystore.properties
 *.jks
 *.keystore
+android/keystore/
+!android/keystore/.gitkeep
 *.apk
 *.aab
 *.ap_
