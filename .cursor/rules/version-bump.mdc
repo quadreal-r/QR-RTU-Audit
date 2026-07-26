@@ -1,0 +1,28 @@
+---
+description: Always bump APP_VER and BUILD with every code change
+alwaysApply: true
+---
+
+# Version bump on every change
+
+Whenever you change `index.html` (or publish the tracker), **always bump the version** before finishing.
+
+## How to bump
+
+1. Edit the single source of truth near the top of the `<script>` block:
+   - `const APP_VER='vX.Y.Z';`
+   - `const BUILD=N;`
+2. Patch version (`Z`) increments by **+1 per change** (each distinct fix/feature/publish-worthy edit).
+3. `BUILD` increments by the **same amount** as the patch bump (usually +1).
+4. Do not hardcode version strings elsewhere — use `${APP_VER}` in template literals and `'...'+BUILD+'...'` in single-quoted strings.
+
+## Examples
+
+- `v1.1.13` / Build `24` → next change → `v1.1.14` / Build `25`
+- Multiple small edits in one user request = **one** bump
+- Separate user requests = separate bumps
+
+## Never
+
+- Ship UI/data/search/filter changes without bumping
+- Leave stale hardcoded `v1.x.x` or `Build N` in the hero or footer

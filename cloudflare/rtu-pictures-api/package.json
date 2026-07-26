@@ -1,0 +1,14 @@
+{
+  "name": "rtu-pictures-api",
+  "private": true,
+  "description": "Cloudflare Worker for RTU audit photo auth and R2 uploads",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dry-run": "wrangler deploy --dry-run",
+    "dev": "wrangler dev",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.28.0"
+  }
+}

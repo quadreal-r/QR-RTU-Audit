@@ -1,0 +1,16 @@
+# CodeRabbit review defaults for this repo.
+# Install the CodeRabbit GitHub App on the private repo (marketplace / coderabbit.ai)
+# — configuration here does not activate the bot by itself.
+# Cursor Bugbot can be used as an alternative PR reviewer.
+language: en-US
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+chat:
+  auto_reply: true

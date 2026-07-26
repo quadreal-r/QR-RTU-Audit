@@ -1,0 +1,91 @@
+---
+description: Security baseline for the QR Industrial RTU Audit app (Worker, web, native shells)
+alwaysApply: true
+---
+
+# Security baseline — QR Industrial RTU Audit
+
+## What this app is (read before changing anything)
+
+An offline-first field audit tracker for rooftop HVAC units across QuadReal buildings.
+Three surfaces, no framework, no bundler:
+
+1. `index.html` — a single self-contained SPA (inline CSS/JS, base64 assets, embedded
+   `DATA` inventory). Progress in `localStorage` (`qr_rtu_v3:*`), audit photos in
+   IndexedDB (`qr_rtu_photos_v1`), Cloudflare session token in `sessionStorage`.
+2. Native shells that embed a byte-identical copy of `index.html`: Android WebView
+   (`android/`) and iOS WKWebView (`ios/`). Not Capacitor, not Cordova.
+3. `cloudflare/rtu-pictures-api` — a Worker that authenticates staff and streams photos
+   into the R2 bucket `rtu-pictures`.
+
+Data handled is confidential business data: building addresses, property manager names,
+RTU UIDs, free-text technician notes, and JPEG photos carrying GPS EXIF. There is no
+customer PII and no payment data. Treat photo GPS + notes as the sensitive core.
+
+## Non-negotiable rules
+
+1. **No secrets in the repo, ever.** Worker secrets go in `wrangler secret put`, never in
+   `wrangler.jsonc`, never in `index.html`, never in a README. Keystores, provisioning
+   profiles, `.env`, and `.wrangler/` stay gitignored. Rotate `AUTH_PASSWORD` and
+   `AUTH_SECRET` every 90 days and whenever a technician leaves. Bump `TOKEN_EPOCH` to
+   revoke all outstanding tokens immediately.
+2. **The Worker is the only trust boundary.** The client is fully attacker-controlled —
+   anyone can decompile the APK and read every line. Never enforce a security decision in
+   `index.html` alone. Every rule that matters is re-checked in the Worker.
+3. **Fail closed.** Missing config, unparseable input, or an unexpected state returns an
+   error, never a permissive default. Specifically: if `AUTH_SECRET` is unset, the Worker
+   must refuse to mint tokens rather than fall back to signing with `AUTH_PASSWORD`.
+4. **Rate limit every unauthenticated endpoint.** `/api/login` is a single shared password
+   with no lockout; without a limit it is a free brute-force oracle. Use the Workers
+   `ratelimit` binding. Authenticated uploads get their own limit so one leaked token
+   cannot run up an R2 bill.
+5. **Validate uploads on the server: size, type, and magic bytes.** Never echo a
+   client-supplied `Content-Type` into R2 metadata. Never let a client choose an object key
+   that can overwrite an existing one.
+6. **HTTPS only, no exceptions.** The Worker is HTTPS by default; keep it that way in the
+   shells — `usesCleartextTraffic=false`, `MIXED_CONTENT_NEVER_ALLOW`, a network security
+   config, and default iOS ATS with zero exception domains.
+7. **Escape on output, validate on input.** All interpolated text goes through `esc()`,
+   which must cover `& < > " '` and backtick. Anything read from a restored JSON backup or
+   a file input is untrusted: validate shape, allowlist keys, cap lengths, reject unknown IDs.
+8. **Least privilege in the native bridges.** Expose the smallest possible
+   `@JavascriptInterface` surface from a dedicated class, never the Activity. Grant only the
+   WebView permissions actually needed (camera), never `request.grant(request.resources)`.
+   Never build JavaScript by string-concatenating native values — encode as JSON.
+9. **Debug affordances are debug-only.** `setWebContentsDebuggingEnabled` and
+   `isInspectable` must be gated behind `BuildConfig.DEBUG` / `#if DEBUG`.
+10. **CORS is an allowlist.** `Access-Control-Allow-Origin: *` on an authenticated API lets
+    any website on the internet drive it from a victim's browser. Echo only known origins
+    (e.g. `https://appassets.androidplatform.net`, `rtuapp://app`) and send `Vary: Origin`.
+
+## Applying the standard controls to this app
+
+- **AI code review** — every change goes through a PR with CodeRabbit/Bugbot before merge.
+  This is why version control is mandatory here, not optional.
+- **Rate limiting** — Workers `ratelimit` binding. Login keyed on `CF-Connecting-IP`,
+  uploads keyed on a hash of the bearer token.
+- **RLS** — not applicable; there is no database. The equivalent control is object-key
+  scoping and auth checks in the Worker before any R2 operation.
+- **Secret management** — Wrangler secrets, not a cloud secret manager; the app has a
+  small secret inventory (`AUTH_PASSWORD`, `AUTH_SECRET`, `TOKEN_EPOCH`) and no server fleet.
+- **CAPTCHA** — Turnstile does not work on `file://` or custom schemes. Rate limiting is
+  the substitute until Android serves via `WebViewAssetLoader`
+  (`https://appassets.androidplatform.net`); revisit Turnstile then.
+- **HTTPS** — enforced in both shells and by the Worker.
+- **Input sanitization** — `esc()` on output, schema validation on backup restore, and
+  server-side re-validation of every filename and upload.
+- **Dependency updates** — the surface is small (vendored `piexif.js` 1.0.4, AndroidX
+  libs, Wrangler). Dependabot covers Gradle and npm; `piexif.js` is pinned with a recorded
+  SHA-256 in `SECURITY.md` and reviewed manually since there is no package manager for it.
+
+## Before you ship
+
+- Bump `APP_VER` and `BUILD` in `index.html` (see `version-bump.mdc`).
+- Re-run the sync scripts so `android/app/src/main/assets/www/` and `ios/QR-RTU-Audit/www/`
+  stay byte-identical to the root copies. Drift here means the shells ship stale code.
+- Keep Android `versionName` in step with `APP_VER`.
+- If you touched the Worker: brute-force `/api/login` and confirm a 429; PUT a 50 MB body
+  and confirm rejection; PUT `text/html` and confirm rejection; call the API from an
+  unlisted origin and confirm the CORS block.
+- If you touched rendering or import: paste `"><img src=x onerror=alert(1)>` into a note,
+  save, reload, and restore it from a backup file. Nothing should execute.

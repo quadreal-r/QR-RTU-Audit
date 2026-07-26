@@ -1,0 +1,72 @@
+# Cloudflare Wrangler (account cache, local state — never commit)
+.wrangler/
+**/.wrangler/
+.dev.vars
+.dev.vars.*
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json.bak
+
+# Android / Gradle
+local.properties
+keystore.properties
+*.jks
+*.keystore
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+bin/
+gen/
+out/
+build/
+.gradle/
+.cxx/
+.externalNativeBuild/
+captures/
+*.hprof
+*.iml
+
+# IDE / editors
+.idea/
+*.swp
+*.swo
+*~
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+
+# iOS / Xcode / Apple
+*.mobileprovision
+*.xcuserstate
+xcuserdata/
+DerivedData/
+*.ipa
+*.dSYM.zip
+*.dSYM
+Pods/
+.swiftpm/
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs / temp
+*.log
+tmp/
+temp/
+.cache/
