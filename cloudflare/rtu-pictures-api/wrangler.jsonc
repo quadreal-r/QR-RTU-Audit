@@ -1,0 +1,36 @@
+{
+  "name": "rtu-pictures-api",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-23",
+  "workers_dev": true,
+  "vars": {
+    // Bump to revoke all outstanding session tokens immediately.
+    "TOKEN_EPOCH": "1"
+  },
+  "r2_buckets": [
+    {
+      "binding": "PICTURES",
+      "bucket_name": "rtu-pictures"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "LOGIN_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 8, "period": 60 }
+    },
+    {
+      "name": "UPLOAD_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 60, "period": 60 }
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  // Protective CPU ceiling for this lightweight auth/upload Worker (ms).
+  "limits": {
+    "cpu_ms": 10000
+  }
+}

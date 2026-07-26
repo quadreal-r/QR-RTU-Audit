@@ -3,12 +3,12 @@
   "private": true,
   "description": "Cloudflare Worker for RTU audit photo auth and R2 uploads",
   "scripts": {
-    "deploy": "wrangler deploy",
-    "dry-run": "wrangler deploy --dry-run",
-    "dev": "wrangler dev",
-    "tail": "wrangler tail"
+    "deploy": "node ./node_modules/wrangler/bin/wrangler.js deploy",
+    "dry-run": "node ./node_modules/wrangler/bin/wrangler.js deploy --dry-run",
+    "dev": "node ./node_modules/wrangler/bin/wrangler.js dev",
+    "tail": "node ./node_modules/wrangler/bin/wrangler.js tail"
   },
   "devDependencies": {
-    "wrangler": "^4.28.0"
+    "wrangler": "^4.114.0"
   }
 }
