@@ -42,7 +42,7 @@ Mirror of the security baseline “Before you ship” section — tick these bef
 ```bash
 cd cloudflare/rtu-pictures-api
 npm install          # pins wrangler via package.json
-npm run deploy:dry-run
+npm run dry-run      # wrangler deploy --dry-run
 npm run deploy
 ```
 
