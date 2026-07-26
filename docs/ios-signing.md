@@ -3,7 +3,8 @@
 ## Free Apple ID (today)
 
 1. On a Mac: `git pull` this repo, `npm install`, `npm run sync`.
-2. Open `ios/App/App.xcworkspace` in Xcode (not the `.xcodeproj`).
+2. Open `ios/App/App.xcodeproj` in Xcode. (Capacitor 8 uses Swift Package Manager via
+   `ios/App/CapApp-SPM`, so there is no CocoaPods `.xcworkspace` to open.)
 3. Select the **App** target → **Signing & Capabilities** → check **Automatically manage signing**.
 4. Choose your personal Team (free Apple ID).
 5. Plug in an iPhone, trust the computer, Run (▶).

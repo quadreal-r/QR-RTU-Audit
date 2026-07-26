@@ -1,6 +1,9 @@
 {
   "name": "rtu-pictures-api",
   "main": "src/index.js",
+  // quadreal.rpiwin@gmail.com — owns the rtu-pictures R2 bucket. Pinned so a stale
+  // wrangler account cache can never publish this Worker to a different account.
+  "account_id": "ed62b8514615e386084ffd47455ec775",
   "compatibility_date": "2026-07-23",
   "workers_dev": true,
   "vars": {
@@ -28,9 +31,7 @@
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
-  },
-  // Protective CPU ceiling for this lightweight auth/upload Worker (ms).
-  "limits": {
-    "cpu_ms": 10000
   }
+  // No "limits.cpu_ms": the Workers Free plan rejects explicit CPU limits and applies
+  // its own ceiling. Re-add a protective limit if this account moves to a paid plan.
 }

@@ -1,5 +1,7 @@
 {
   "name": "rtu-qr-tracker",
+  // quadreal.rpiwin@gmail.com — same account as the rtu-pictures R2 bucket.
+  "account_id": "ed62b8514615e386084ffd47455ec775",
   "compatibility_date": "2026-07-23",
   "workers_dev": true,
   "assets": {

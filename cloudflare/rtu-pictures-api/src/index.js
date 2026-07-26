@@ -5,6 +5,11 @@
 const TOKEN_TTL_HOURS = 8;
 const MAX_UPLOAD_BYTES = 12 * 1024 * 1024; // 12 MB
 const ALLOWED_ORIGINS = new Set([
+  // Capacitor shells: iOS uses the default `capacitor` scheme, Android follows
+  // `androidScheme: 'https'` from capacitor.config.ts.
+  "capacitor://localhost",
+  "https://localhost",
+  // Legacy hand-written shells in legacy-shells/ (WebViewAssetLoader / custom scheme).
   "https://appassets.androidplatform.net",
   "rtuapp://app",
 ]);
@@ -20,7 +25,8 @@ function corsHeaders(request) {
   const origin = request.headers.get("Origin") || "";
   const headers = {
     "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Filename",
+    "Access-Control-Allow-Headers":
+      "Authorization, Content-Type, X-Filename, X-Building-Id, X-Rtu-Key, X-Photo-Slot, X-Audit-Year",
     "Access-Control-Max-Age": "86400",
     ...SECURITY_HEADERS,
   };
@@ -149,6 +155,33 @@ function safeKey(name) {
     .pop()
     .replace(/[^\w.\- ()]+/g, "_")
     .slice(0, 180);
+}
+
+/**
+ * Client-supplied identifiers that let the downstream QR East Industrial database
+ * join an object back to its RTU without parsing the filename. Untrusted: keep to a
+ * conservative ASCII allowlist and a short cap so nothing hostile lands in R2 metadata.
+ */
+function safeMetaValue(value, max = 64) {
+  return String(value || "")
+    .trim()
+    .replace(/[^\w.\-]+/g, "_")
+    .slice(0, max);
+}
+
+function uploadMetadata(request) {
+  const meta = {};
+  const fields = {
+    buildingId: request.headers.get("X-Building-Id"),
+    rtuKey: request.headers.get("X-Rtu-Key"),
+    slot: request.headers.get("X-Photo-Slot"),
+    auditYear: request.headers.get("X-Audit-Year"),
+  };
+  for (const [name, raw] of Object.entries(fields)) {
+    const clean = safeMetaValue(raw);
+    if (clean) meta[name] = clean;
+  }
+  return meta;
 }
 
 function clientIp(request) {
@@ -334,6 +367,7 @@ export default {
         customMetadata: {
           originalName: key,
           uploadedAt: new Date().toISOString(),
+          ...uploadMetadata(request),
         },
       });
       return json(request, { ok: true, key: objectKey });
