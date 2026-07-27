@@ -438,8 +438,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.76';
-const BUILD=87;
+const APP_VER='v1.1.77';
+const BUILD=88;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function isNativeShell(){
@@ -687,10 +687,10 @@ function photoKeyBuildingId(key){
   const i=key.indexOf('|');
   return i>0?key.slice(0,i):'';
 }
-let localPhotoCache={all:null,byProp:{}};
+let localPhotoCache={all:null,byProp:{},byBldg:{}};
 let localPhotoCountInflight=null;
 function invalidateLocalPhotoCache(){
-  localPhotoCache={all:null,byProp:{}};
+  localPhotoCache={all:null,byProp:{},byBldg:{}};
   queueHeroPhotoRefresh();
 }
 function photoIdbKeys(){
@@ -706,14 +706,19 @@ async function ensureLocalPhotoCounts(){
   if(localPhotoCountInflight) return localPhotoCountInflight;
   localPhotoCountInflight=(async()=>{
     const keys=await photoIdbKeys();
+    const byBldg={};
+    keys.forEach(key=>{
+      const id=photoKeyBuildingId(key);
+      if(!id) return;
+      byBldg[id]=(byBldg[id]||0)+1;
+    });
     const byProp={};
     DATA.forEach(p=>{
-      const ids=new Set(p.buildings.map(b=>b.id));
       let n=0;
-      keys.forEach(key=>{if(ids.has(photoKeyBuildingId(key))) n++;});
+      p.buildings.forEach(b=>{n+=byBldg[b.id]||0;});
       byProp[p._i]=n;
     });
-    localPhotoCache={all:keys.length,byProp};
+    localPhotoCache={all:keys.length,byProp,byBldg};
     localPhotoCountInflight=null;
     return localPhotoCache;
   })();
@@ -728,6 +733,19 @@ function cachedPropLocalPhotoCount(p){
   const v=localPhotoCache.byProp[p._i];
   return (v==null)?null:v;
 }
+function cachedBldgLocalPhotoCount(b){
+  if(!b||!b.id) return null;
+  if(!localPhotoCache.byBldg||localPhotoCache.all==null) return null;
+  return localPhotoCache.byBldg[b.id]||0;
+}
+function openBuildingInView(){
+  if(view.level!=='buildings'||view.pi==null||!DATA[view.pi]) return null;
+  const open=app.querySelectorAll('.bld.open');
+  if(open.length!==1) return null;
+  const bi=+open[0].dataset.bi;
+  const b=DATA[view.pi].buildings[bi];
+  return b||null;
+}
 let heroPhotoRefreshTimer=null;
 function queueHeroPhotoRefresh(){
   clearTimeout(heroPhotoRefreshTimer);
@@ -735,7 +753,13 @@ function queueHeroPhotoRefresh(){
 }
 async function refreshHeroPhotoSummary(){
   await ensureLocalPhotoCounts();
-  const heroCap=document.querySelector('.hero .cap span');
+  const hero=document.querySelector('.hero');
+  if(!hero) return;
+  const spans=hero.querySelectorAll('.cap > span');
+  const heroCap=spans[0];
+  const heroRight=spans[1];
+  const heroTitle=hero.querySelector('h1');
+  const heroFill=hero.querySelector('.track .fill');
   if(!heroCap) return;
   if(view.level==='props'){
     const ov=overallAll();
@@ -743,8 +767,22 @@ async function refreshHeroPhotoSummary(){
     heroCap.textContent=pct+'% complete · '+photoSummaryLabel(cachedLocalPhotoCountAll(),cloudPhotoCountAll());
   }else if(view.level==='buildings' && DATA[view.pi]){
     const p=DATA[view.pi];
-    const s=propStats(p);
-    heroCap.textContent=s.done+'/'+s.tot+' units complete · '+photoSummaryLabel(cachedPropLocalPhotoCount(p),propCloudPhotoCount(p));
+    const b=openBuildingInView();
+    if(b){
+      const c=bldStats(b);
+      const pct=c.tot?Math.round(c.done/c.tot*100):0;
+      if(heroTitle) heroTitle.textContent=b.name;
+      if(heroFill) heroFill.style.width=pct+'%';
+      heroCap.textContent=c.done+'/'+c.tot+' units complete · '+photoSummaryLabel(cachedBldgLocalPhotoCount(b),bldCloudPhotoCount(b));
+      if(heroRight && !filters.q.trim()) heroRight.textContent=pct+'%';
+    }else{
+      const s=propStats(p);
+      const pct=s.tot?Math.round(s.done/s.tot*100):0;
+      if(heroTitle) heroTitle.textContent=p.property;
+      if(heroFill) heroFill.style.width=pct+'%';
+      heroCap.textContent=s.done+'/'+s.tot+' units complete · '+photoSummaryLabel(cachedPropLocalPhotoCount(p),propCloudPhotoCount(p));
+      if(heroRight && !filters.q.trim()) heroRight.textContent=pct+'%';
+    }
   }
 }
 function ensurePhotoSlots(o){
@@ -923,6 +961,11 @@ function cloudPhotoCountAll(){
 function propCloudPhotoCount(p){
   let n=0;
   p.buildings.forEach(b=>b.rtus.forEach(r=>{n+=cloudPhotoCount(stateOf(b.id,r.k));}));
+  return n;
+}
+function bldCloudPhotoCount(b){
+  let n=0;
+  (b.rtus||[]).forEach(r=>{n+=cloudPhotoCount(stateOf(b.id,r.k));});
   return n;
 }
 /** Banner line: on-device blobs vs published Cloudflare names (a photo can count in both). */
@@ -1167,9 +1210,14 @@ function renderProps(){
 function renderBuildings(){
   const p=DATA[view.pi];
   const s=propStats(p); // full portfolio totals — search must not shrink these
-  const cloud=propCloudPhotoCount(p);
-  const local=cachedPropLocalPhotoCount(p);
-  const pct=s.tot?Math.round(s.done/s.tot*100):0;
+  const focusBi=view.focusBi;
+  const focusB=(focusBi!=null&&p.buildings[focusBi])?p.buildings[focusBi]:null;
+  // Banner follows the focused building when search/deep-link opens one; otherwise the park.
+  const cloud=focusB?bldCloudPhotoCount(focusB):propCloudPhotoCount(p);
+  const local=focusB?cachedBldgLocalPhotoCount(focusB):cachedPropLocalPhotoCount(p);
+  const unitDone=focusB?bldStats(focusB).done:s.done;
+  const unitTot=focusB?bldStats(focusB).tot:s.tot;
+  const pct=unitTot?Math.round(unitDone/unitTot*100):0;
   const q=filters.q.trim();
   const searching=!!q;
   const ms=searching?matchSummary([p]):null;
@@ -1181,16 +1229,15 @@ function renderBuildings(){
     <div class="app-ver" aria-hidden="true">${APP_VER}</div>
     <div class="quad" style="background-image:${QUAD_BG}"></div>
     <div class="eyebrow">${eyebrow}</div>
-    <h1>${esc(p.property)}</h1>
+    <h1>${esc(focusB?focusB.name:p.property)}</h1>
     <div class="track"><div class="fill" style="width:${pct}%"></div></div>
-    <div class="cap"><span>${s.done}/${s.tot} units complete · ${photoSummaryLabel(local,cloud)}</span><span>${searching?ms.rtus+' match'+(ms.rtus===1?'':'es'):pct+'%'}</span></div>
+    <div class="cap"><span>${unitDone}/${unitTot} units complete · ${photoSummaryLabel(local,cloud)}</span><span>${searching?ms.rtus+' match'+(ms.rtus===1?'':'es'):pct+'%'}</span></div>
   </section>
   ${controlsHTML()}
   <div class="plist" style="margin-top:12px">`;
   const tokens=tokensOf(filters.q);
   const propLevel=tokens.length && hayHas(propHay(p),tokens);
   const bldgs=clusterBuildings(p);
-  const focusBi=view.focusBi;
   p.buildings.forEach((b,bi)=>{
     if(!bldgs.includes(b)) return;
     if(tokens.length && !propLevel && !bldgMatches(b,tokens)) return;
@@ -1223,7 +1270,21 @@ function renderBuildings(){
   queueHeroPhotoRefresh();
   document.getElementById('back').onclick=()=>{view={level:'props',pi:null};render();window.scrollTo(0,0);};
   wireControls(true);
-  app.querySelectorAll('.bhead').forEach(btn=>btn.onclick=()=>{const bld=btn.closest('.bld');const open=bld.classList.toggle('open');btn.setAttribute('aria-expanded',open);});
+  app.querySelectorAll('.bhead').forEach(btn=>btn.onclick=()=>{
+    const bld=btn.closest('.bld');
+    const open=bld.classList.toggle('open');
+    btn.setAttribute('aria-expanded',open);
+    // Keep at most one building open so the blue banner can scope to that address.
+    if(open){
+      app.querySelectorAll('.bld.open').forEach(other=>{
+        if(other===bld) return;
+        other.classList.remove('open');
+        const oh=other.querySelector('.bhead');
+        if(oh) oh.setAttribute('aria-expanded','false');
+      });
+    }
+    queueHeroPhotoRefresh();
+  });
   wireRtu();
   if(focusBi!=null){
     const el=app.querySelector('.bld[data-bi="'+focusBi+'"]');
