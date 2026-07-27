@@ -81,8 +81,14 @@
   .settings-body .sec h3{margin:0;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
   .settings-body .status{font-size:13px;font-weight:700;color:var(--muted)}
   .settings-body .status.on{color:var(--good)}
-  .settings-body input[type=password]{height:var(--tap);border:1.5px solid var(--line-2);border-radius:12px;padding:0 12px;font:inherit;font-size:16px}
+  /* Both types: the reveal toggle swaps the field to type=text. */
+  .settings-body input[type=password],.settings-body input[type=text]{height:var(--tap);border:1.5px solid var(--line-2);border-radius:12px;padding:0 12px;font:inherit;font-size:16px}
   .settings-body input:focus{outline:none;border-color:var(--qr-blue);box-shadow:0 0 0 4px var(--blue-soft)}
+  .pwwrap{position:relative;display:flex}
+  .pwwrap input{flex:1 1 auto;padding-right:70px!important}
+  .pwshow{position:absolute;right:5px;top:50%;transform:translateY(-50%);height:36px;min-width:58px;padding:0 10px;border:0;border-radius:9px;background:transparent;color:var(--qr-blue);font:inherit;font-size:13px;font-weight:800;cursor:pointer}
+  .pwshow:hover{background:var(--blue-soft)}
+  .pwshow:focus-visible{outline:2.5px solid var(--qr-blue);outline-offset:2px}
   .settings-body .rowbtns{display:flex;gap:8px;flex-wrap:wrap}
   .settings-body .rowbtns .btn{flex:1 1 120px}
   .upload-prog{font-size:12.5px;font-weight:700;color:var(--muted);min-height:1.2em}
@@ -314,7 +320,10 @@
         <h3>Cloudflare account</h3>
         <div class="status" id="cfStatus">Signed out</div>
         <div id="cfLoginBox">
-          <input id="cfPassword" type="password" placeholder="Sign-in password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false">
+          <div class="pwwrap">
+            <input id="cfPassword" type="password" placeholder="Sign-in password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false">
+            <button type="button" class="pwshow" id="cfPwToggle" aria-pressed="false" aria-label="Show password" title="Show password">Show</button>
+          </div>
           <div class="rowbtns" style="margin-top:8px">
             <button type="button" class="btn pri" id="cfSignIn">Sign in</button>
           </div>
@@ -378,8 +387,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.54';
-const BUILD=65;
+const APP_VER='v1.1.55';
+const BUILD=66;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function cfGetToken(){try{return sessionStorage.getItem(CF_SESSION_KEY)||'';}catch(_){return '';}}
@@ -1762,6 +1771,8 @@ function openSettings(){
   refreshCfStatus();
   refreshScreenTimeoutUI();
   refreshSyncStatus();
+  // Never reopen the panel with a password still on screen.
+  setPasswordVisible(false);
   m.hidden=false;
 }
 function closeSettings(){
@@ -1787,6 +1798,17 @@ function refreshCfStatus(){
     btn.title=label;
   }
 }
+function setPasswordVisible(show){
+  const pw=document.getElementById('cfPassword');
+  const btn=document.getElementById('cfPwToggle');
+  if(!pw||!btn) return;
+  pw.type=show?'text':'password';
+  btn.textContent=show?'Hide':'Show';
+  btn.setAttribute('aria-pressed',show?'true':'false');
+  const label=show?'Hide password':'Show password';
+  btn.setAttribute('aria-label',label);
+  btn.title=label;
+}
 async function cfSignIn(){
   const input=document.getElementById('cfPassword');
   // Phone keyboards and paste routinely add an invisible trailing space, which the
@@ -1801,6 +1823,7 @@ async function cfSignIn(){
     if(!res.ok||!data.token){alert(data.error||'Sign-in failed');return;}
     cfSetToken(data.token);
     if(input) input.value='';
+    setPasswordVisible(false);
     refreshCfStatus();
     toast('Signed in');
     syncTick();
@@ -1876,6 +1899,8 @@ function wireSettingsOnce(){
   const si=document.getElementById('cfSignIn'); if(si) si.onclick=()=>cfSignIn();
   const so=document.getElementById('cfSignOut'); if(so) so.onclick=()=>cfSignOut();
   const pw=document.getElementById('cfPassword'); if(pw) pw.addEventListener('keydown',e=>{if(e.key==='Enter') cfSignIn();});
+  const pwt=document.getElementById('cfPwToggle');
+  if(pwt&&pw) pwt.onclick=()=>setPasswordVisible(pw.type==='password');
   const exp=document.getElementById('setExportDb'); if(exp) exp.onclick=()=>{backup(); toast('Database exported');};
   const imp=document.getElementById('setImportDb'); const file=document.getElementById('setImportFile');
   if(imp&&file){imp.onclick=()=>file.click(); file.onchange=restore;}
