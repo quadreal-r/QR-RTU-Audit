@@ -342,14 +342,6 @@
       <button type="button" class="x" id="settingsClose" aria-label="Close">&times;</button>
     </header>
     <div class="settings-body">
-      <div class="sec" id="installSec" hidden>
-        <h3>Install</h3>
-        <div class="status" id="installHint">Add RTU Audit to this device</div>
-        <div class="rowbtns" id="installBtnRow">
-          <button type="button" class="btn pri" id="setInstall">Install app</button>
-        </div>
-        <p style="margin:0;font-size:12px;color:var(--muted);line-height:1.45">Installed, it opens fullscreen from your home screen and keeps working with no signal.</p>
-      </div>
       <div class="sec">
         <h3>Cloudflare account</h3>
         <div class="status" id="cfStatus">Signed out</div>
@@ -421,8 +413,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.58';
-const BUILD=69;
+const APP_VER='v1.1.59';
+const BUILD=70;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function isNativeShell(){
@@ -1837,7 +1829,6 @@ function openSettings(){
   refreshCfStatus();
   refreshScreenTimeoutUI();
   refreshSyncStatus();
-  refreshInstallUI();
   // Never reopen the panel with a password still on screen.
   setPasswordVisible(false);
   m.hidden=false;
@@ -1900,13 +1891,6 @@ function refreshInstallUI(){
   const ios=isIOS()&&!installed;
   const canPrompt=!!deferredInstall;
   const offer=!installed&&(canPrompt||ios);
-
-  const sec=document.getElementById('installSec');
-  const hint=document.getElementById('installHint');
-  const btnRow=document.getElementById('installBtnRow');
-  if(sec) sec.hidden=!offer;
-  if(hint) hint.textContent=ios?'Tap Share, then “Add to Home Screen”':'Add RTU Audit to this device';
-  if(btnRow) btnRow.hidden=ios; // Safari gives no way to trigger it
 
   const bar=document.getElementById('installBar');
   if(bar){
@@ -2063,7 +2047,6 @@ function wireSettingsOnce(){
   const up=document.getElementById('setUploadPics'); if(up) up.onclick=()=>uploadAllPictures();
   const sy=document.getElementById('setSyncNow');
   if(sy) sy.onclick=()=>{if(!cfSignedIn()){alert('Sign in first.');return;}syncTick();};
-  const ins=document.getElementById('setInstall'); if(ins) ins.onclick=()=>runInstall();
   const ibGo=document.getElementById('installBarGo'); if(ibGo) ibGo.onclick=()=>runInstall();
   const ibNo=document.getElementById('installBarNo'); if(ibNo) ibNo.onclick=()=>dismissInstall();
   document.querySelectorAll('#screenTimeoutOpts .opt').forEach(btn=>{

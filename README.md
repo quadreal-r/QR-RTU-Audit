@@ -35,7 +35,7 @@ See:
 
 Anyone sent the tracker URL can install it without an app store:
 
-- **Chrome / Edge (Android, desktop)** — an "Install RTU Audit" bar appears at the bottom, and Settings has an **Install app** button. Both use the browser's own install prompt.
+- **Chrome / Edge (Android, desktop)** — an "Install RTU Audit" bar appears at the bottom of the page and uses the browser's own install prompt.
 - **iPhone / iPad** — Safari has no install API, so the same bar reads "Tap Share, then Add to Home Screen".
 
 `manifest.webmanifest` and `sw.js` live at the repo root and are copied into `www/` by `npm run build:web`, which also stamps `APP_VER` into the service worker's cache name so a deploy can never be served from a stale cache. Icons are generated from the iOS app icon by `scripts/make-pwa-icons.ps1`.
