@@ -423,8 +423,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.74';
-const BUILD=85;
+const APP_VER='v1.1.75';
+const BUILD=86;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function isNativeShell(){
@@ -1910,11 +1910,17 @@ function ensurePhotoFiles(o){
   if(o.f.length>PHOTO_MAX) o.f=o.f.slice(0,PHOTO_MAX);
   return o.f;
 }
+/** True once this slot has a published Cloudflare object name (sync or prior upload). */
+function photoSlotPublished(o,slot){
+  return !!(o&&Array.isArray(o.f)&&o.f[slot]);
+}
 function loadUploadQueue(){
   try{const raw=localStorage.getItem(UPLOAD_QUEUE_KEY);const arr=raw?JSON.parse(raw):[];return Array.isArray(arr)?arr:[];}catch(_){return [];}
 }
 function saveUploadQueue(q){try{localStorage.setItem(UPLOAD_QUEUE_KEY,JSON.stringify(q.slice(0,600)));}catch(_){}}
 function queuePhotoUpload(id,k,slot,name){
+  const o=stateOf(id,k);
+  if(o){ensurePhotoFiles(o);if(photoSlotPublished(o,slot)) return;}
   const q=loadUploadQueue();
   if(!q.some(j=>j.id===id&&j.k===k&&j.slot===slot)) q.push({id:id,k:k,slot:slot,name:name});
   saveUploadQueue(q);
@@ -1941,11 +1947,14 @@ async function uploadPhotoBlob(name,blob,meta){
     body:bytes
   });
   let err='';
-  if(!res.ok){
+  let skipped=false;
+  if(res.ok){
+    try{const j=await res.json();skipped=!!(j&&j.skipped);}catch(_){}
+  }else{
     try{const j=await res.json();err=j.error||'';}catch(_){}
     if(!err) err='HTTP '+res.status;
   }
-  return {res,err};
+  return {res,err,skipped};
 }
 async function processUploadQueue(){
   if(uploadBusy||!canSave||!cfSignedIn()||navigator.onLine===false) return;
@@ -1956,6 +1965,12 @@ async function processUploadQueue(){
   try{
     while(q.length){
       const job=q[0];
+      const existing=stateOf(job.id,job.k);
+      if(existing){
+        ensurePhotoFiles(existing);
+        // Sync (or a parallel upload) already published this slot — do not PUT again.
+        if(photoSlotPublished(existing,job.slot)){q.shift();saveUploadQueue(q);continue;}
+      }
       let blob=null;
       try{blob=await photoGet(photoSlotKey(job.id,job.k,job.slot));}catch(_){}
       if(!blob){q.shift();saveUploadQueue(q);continue;} // deleted locally before it went up
@@ -2212,23 +2227,38 @@ async function uploadAllPictures(){
   const prog=document.getElementById('uploadProg');
   const token=cfGetToken();
   const jobs=[];
+  let already=0;
   DATA.forEach(p=>p.buildings.forEach(b=>b.rtus.forEach(r=>{
     const o=stateOf(b.id,r.k);
     if(!o||!Array.isArray(o.p)) return;
+    ensurePhotoFiles(o);
     o.p.forEach((has,slot)=>{
       if(!has) return;
+      // Already published for this slot — uploading again would only rewrite the same
+      // object (or create a second Audit-year name). Skip and report as already on cloud.
+      if(photoSlotPublished(o,slot)){already++;return;}
       jobs.push({b,r,slot,name:photoFileName(b,r,slot)});
     });
   })));
-  if(!jobs.length){if(prog)prog.textContent='No pictures on this device to upload.';toast('No pictures found');return;}
-  let ok=0,fail=0,lastErr='';
+  if(!jobs.length){
+    if(prog){
+      prog.textContent=already
+        ?('Nothing new to upload — '+already+' already on cloud.')
+        :'No pictures on this device to upload.';
+    }
+    toast(already?'Already on cloud':'No pictures found');
+    return;
+  }
+  let ok=0,fail=0,skipped=0,lastErr='';
   for(let i=0;i<jobs.length;i++){
     const job=jobs[i];
     if(prog) prog.textContent='Uploading '+(i+1)+' / '+jobs.length+'…';
     try{
+      const live=stateOf(job.b.id,job.r.k);
+      if(live){ensurePhotoFiles(live);if(photoSlotPublished(live,job.slot)){skipped++;continue;}}
       const blob=await photoGet(photoSlotKey(job.b.id,job.r.k,job.slot));
       if(!blob){fail++;lastErr='missing local photo';continue;}
-      const {res,err}=await uploadPhotoBlob(job.name,blob,{
+      const {res,err,skipped:wasSkipped}=await uploadPhotoBlob(job.name,blob,{
         token,buildingId:job.b.id,rtuKey:job.r.k,slot:job.slot+1
       });
       if(cfClearSessionOnUnauthorized(res)){
@@ -2242,20 +2272,22 @@ async function uploadAllPictures(){
       // Publishing the key is what lets other devices open this photo.
       const o=stateOf(job.b.id,job.r.k);
       if(o){ensurePhotoFiles(o);o.f[job.slot]=job.name;touch(job.b.id,job.r.k);persist(job.b.id);queueHeroPhotoRefresh();}
-      ok++;
+      if(wasSkipped) skipped++; else ok++;
     }catch(e){fail++;lastErr=(e&&e.message)||'network error';}
   }
-  if(ok) syncNow();
+  if(ok||skipped) syncNow();
+  const totalSkip=already+skipped;
   if(prog){
-    let msg='Done — '+ok+' uploaded.';
+    let msg='Done — '+ok+' uploaded';
+    if(totalSkip) msg+=', '+totalSkip+' already on cloud';
     if(fail){
-      msg='Done — '+ok+' uploaded, '+fail+' failed';
+      msg+=', '+fail+' failed';
       if(lastErr) msg+=': '+lastErr;
-      msg+='.';
     }
+    msg+='.';
     prog.textContent=msg;
   }
-  toast(ok+' picture'+(ok===1?'':'s')+' uploaded');
+  toast(ok?'Uploaded '+ok+(totalSkip?' · '+totalSkip+' skipped':''):(totalSkip?'Already on cloud':'Nothing uploaded'));
 }
 function wireSettingsOnce(){
   if(wireSettingsOnce.done) return;

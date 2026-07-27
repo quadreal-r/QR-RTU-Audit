@@ -203,10 +203,11 @@ function uploadMetadata(request) {
 
 /**
  * Objects are stored flat at the bucket root to match the existing RTU inventory
- * (`2320-RTU-14 (3) (Audit-2026).jpg`), so re-uploading a photo replaces it in place
- * instead of accumulating duplicates. That means the client chooses the key, so the name
- * must match the audit-photo shape exactly — otherwise a caller could overwrite an
- * unrelated object in a bucket shared with QR East Industrial.
+ * (`2320-RTU-14 (3) (Audit-2026).jpg`). A second PUT of the same name is rejected as
+ * `skipped` so duplicates do not rewrite the object; delete-then-upload still replaces.
+ * The client chooses the key, so the name must match the audit-photo shape exactly —
+ * otherwise a caller could overwrite an unrelated object in a bucket shared with
+ * QR East Industrial.
  */
 const AUDIT_PHOTO_NAME = /^[A-Za-z0-9]+-[A-Za-z0-9_-]+ \(\d{1,2}\) \(Audit-\d{4}\)\.(jpg|jpeg|png)$/i;
 
@@ -726,6 +727,30 @@ export default {
         );
       }
 
+      const objectKey = key;
+      // Same audit name already in R2 — skip before buffering the body so a mistaken
+      // re-upload does not rewrite the object. Map badge reconcile stays best-effort.
+      const existing = await env.PICTURES.head(objectKey);
+      if (existing) {
+        try {
+          if (request.body && typeof request.body.cancel === "function") {
+            await request.body.cancel();
+          }
+        } catch (_) {}
+        let map = null;
+        try {
+          map = await registerPictureInMap(env, objectKey);
+        } catch (_) {
+          map = { ok: false, reason: "exception" };
+        }
+        return json(request, {
+          ok: true,
+          key: objectKey,
+          skipped: true,
+          mapRegistered: !!(map && map.ok),
+        });
+      }
+
       const read = await readUploadBody(request, MAX_UPLOAD_BYTES);
       if (read.error) return read.error;
 
@@ -738,7 +763,6 @@ export default {
         );
       }
 
-      const objectKey = key;
       await env.PICTURES.put(objectKey, read.body, {
         httpMetadata: { contentType },
         customMetadata: {
