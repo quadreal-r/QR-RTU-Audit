@@ -423,8 +423,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.70';
-const BUILD=81;
+const APP_VER='v1.1.71';
+const BUILD=82;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function isNativeShell(){
@@ -1854,6 +1854,30 @@ function queuePhotoUpload(id,k,slot,name){
 function dequeuePhotoUpload(id,k,slot){
   saveUploadQueue(loadUploadQueue().filter(j=>!(j.id===id&&j.k===k&&j.slot===slot)));
 }
+/** PUT one photo to R2. ArrayBuffer body helps Safari set Content-Length. */
+async function uploadPhotoBlob(name,blob,meta){
+  const bytes=await blob.arrayBuffer();
+  const type=(blob&&blob.type&&blob.type.indexOf('image/')===0)?blob.type:'image/jpeg';
+  const res=await fetch(CF_API+'/api/upload/'+encodeURIComponent(name),{
+    method:'PUT',
+    headers:{
+      'Authorization':'Bearer '+(meta.token||cfGetToken()),
+      'Content-Type':type,
+      'X-Filename':name,
+      'X-Building-Id':String(meta.buildingId||''),
+      'X-Rtu-Key':String(meta.rtuKey||''),
+      'X-Photo-Slot':String(meta.slot||''),
+      'X-Audit-Year':String(meta.auditYear||new Date().getFullYear())
+    },
+    body:bytes
+  });
+  let err='';
+  if(!res.ok){
+    try{const j=await res.json();err=j.error||'';}catch(_){}
+    if(!err) err='HTTP '+res.status;
+  }
+  return {res,err};
+}
 async function processUploadQueue(){
   if(uploadBusy||!canSave||!cfSignedIn()||navigator.onLine===false) return;
   let q=loadUploadQueue();
@@ -1868,19 +1892,9 @@ async function processUploadQueue(){
       if(!blob){q.shift();saveUploadQueue(q);continue;} // deleted locally before it went up
       let res;
       try{
-        res=await fetch(CF_API+'/api/upload/'+encodeURIComponent(job.name),{
-          method:'PUT',
-          headers:{
-            'Authorization':'Bearer '+cfGetToken(),
-            'Content-Type':blob.type||'image/jpeg',
-            'X-Filename':job.name,
-            'X-Building-Id':String(job.id),
-            'X-Rtu-Key':String(job.k),
-            'X-Photo-Slot':String(job.slot+1),
-            'X-Audit-Year':String(new Date().getFullYear())
-          },
-          body:blob
-        });
+        ({res}=await uploadPhotoBlob(job.name,blob,{
+          buildingId:job.id,rtuKey:job.k,slot:job.slot+1
+        }));
       }catch(_){break;} // lost signal mid-drain: keep the queue and retry later
       if(cfClearSessionOnUnauthorized(res)) break;
       if(!res.ok) break;
@@ -2138,25 +2152,15 @@ async function uploadAllPictures(){
     });
   })));
   if(!jobs.length){if(prog)prog.textContent='No pictures on this device to upload.';toast('No pictures found');return;}
-  let ok=0,fail=0;
+  let ok=0,fail=0,lastErr='';
   for(let i=0;i<jobs.length;i++){
     const job=jobs[i];
     if(prog) prog.textContent='Uploading '+(i+1)+' / '+jobs.length+'…';
     try{
       const blob=await photoGet(photoSlotKey(job.b.id,job.r.k,job.slot));
-      if(!blob){fail++;continue;}
-      const res=await fetch(CF_API+'/api/upload/'+encodeURIComponent(job.name),{
-        method:'PUT',
-        headers:{
-          'Authorization':'Bearer '+token,
-          'Content-Type':blob.type||'image/jpeg',
-          'X-Filename':job.name,
-          'X-Building-Id':String(job.b.id),
-          'X-Rtu-Key':String(job.r.k),
-          'X-Photo-Slot':String(job.slot+1),
-          'X-Audit-Year':String(new Date().getFullYear())
-        },
-        body:blob
+      if(!blob){fail++;lastErr='missing local photo';continue;}
+      const {res,err}=await uploadPhotoBlob(job.name,blob,{
+        token,buildingId:job.b.id,rtuKey:job.r.k,slot:job.slot+1
       });
       if(cfClearSessionOnUnauthorized(res)){
         fail++;
@@ -2165,15 +2169,15 @@ async function uploadAllPictures(){
         openSettings();
         break;
       }
-      if(!res.ok){fail++;continue;}
+      if(!res.ok){fail++;lastErr=err||('HTTP '+res.status);continue;}
       // Publishing the key is what lets other devices open this photo.
       const o=stateOf(job.b.id,job.r.k);
       if(o){ensurePhotoFiles(o);o.f[job.slot]=job.name;touch(job.b.id,job.r.k);persist(job.b.id);}
       ok++;
-    }catch(_){fail++;}
+    }catch(e){fail++;lastErr=(e&&e.message)||'network error';}
   }
   if(ok) syncNow();
-  if(prog) prog.textContent='Done — '+ok+' uploaded'+(fail?', '+fail+' failed':'')+'.';
+  if(prog) prog.textContent='Done — '+ok+' uploaded'+(fail?', '+fail+' failed'+(lastErr?': '+lastErr':'')+'.':'.');
   toast(ok+' picture'+(ok===1?'':'s')+' uploaded');
 }
 function wireSettingsOnce(){

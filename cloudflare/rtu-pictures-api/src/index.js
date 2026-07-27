@@ -255,19 +255,49 @@ function sniffImageType(bytes) {
 }
 
 async function readUploadBody(request, maxBytes) {
+  // Safari / iOS WebKit often PUT a Blob without Content-Length (chunked). Requiring
+  // the header made every iPhone upload fail with 411 while desktop Chrome worked.
   const lenHeader = request.headers.get("Content-Length");
-  if (lenHeader == null || lenHeader === "") {
-    return { error: json(request, { ok: false, error: "Content-Length required" }, 411) };
+  if (lenHeader != null && lenHeader !== "") {
+    const declared = Number(lenHeader);
+    if (!Number.isFinite(declared) || declared < 0) {
+      return { error: json(request, { ok: false, error: "Invalid Content-Length" }, 400) };
+    }
+    if (declared === 0) {
+      return { error: json(request, { ok: false, error: "Empty body" }, 400) };
+    }
+    if (declared > maxBytes) {
+      return { error: json(request, { ok: false, error: "Upload too large" }, 413) };
+    }
   }
-  const declared = Number(lenHeader);
-  if (!Number.isFinite(declared) || declared < 0) {
-    return { error: json(request, { ok: false, error: "Invalid Content-Length" }, 400) };
-  }
-  if (declared === 0) {
-    return { error: json(request, { ok: false, error: "Empty body" }, 400) };
-  }
-  if (declared > maxBytes) {
-    return { error: json(request, { ok: false, error: "Upload too large" }, 413) };
+
+  // Stream with a hard cap so a missing Content-Length cannot buffer an unbounded body.
+  if (request.body && typeof request.body.getReader === "function") {
+    const reader = request.body.getReader();
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        try {
+          await reader.cancel();
+        } catch (_) {}
+        return { error: json(request, { ok: false, error: "Upload too large" }, 413) };
+      }
+      chunks.push(value);
+    }
+    if (total === 0) {
+      return { error: json(request, { ok: false, error: "Empty body" }, 400) };
+    }
+    const body = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { body };
   }
 
   const buf = await request.arrayBuffer();
