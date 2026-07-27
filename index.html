@@ -413,8 +413,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.62';
-const BUILD=73;
+const APP_VER='v1.1.64';
+const BUILD=75;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function isNativeShell(){
@@ -661,17 +661,17 @@ function ensurePhotoSlots(o){
 }
 function photoCount(o){
   if(!o) return 0;
-  // Real captures win; empty p[] with ph=true is legacy confirmation
   if(Array.isArray(o.p) && o.p.some(Boolean)) return Math.min(PHOTO_MAX, o.p.filter(Boolean).length);
-  if(o.ph) return PHOTO_NEED;
   return 0;
 }
 function photosDone(o){return photoCount(o)>=PHOTO_NEED;}
 function photosFull(o){return photoCount(o)>=PHOTO_MAX;}
 function syncPhotoFlag(o){o.ph=photosDone(o);return o;}
+function photoUploadPending(id,k,slot){
+  return loadUploadQueue().some(j=>j.id===id&&j.k===k&&j.slot===slot);
+}
 function nextPhotoSlot(o){
   if(!o) return 0;
-  if(o.ph && (!Array.isArray(o.p) || !o.p.some(Boolean))) return -1; // legacy complete
   ensurePhotoSlots(o);
   for(let i=0;i<PHOTO_MAX;i++) if(!o.p[i]) return i;
   return -1;
@@ -1369,6 +1369,14 @@ async function paintPhotoThumbs(row,id,k,o){
   const addBtn=row.querySelector('.ph-add');
   const legacy=!!(o.ph && (!Array.isArray(o.p) || !o.p.some(Boolean)));
   ensurePhotoSlots(o);ensurePhotoFiles(o);
+  let cleared=false;
+  if(legacy){
+    // Old "photos done" flag with no slot list — drop it so Photo is usable again.
+    o.ph=false;
+    o.p=[false,false,false,false];
+    o.f=[null,null,null,null];
+    cleared=true;
+  }
 
   // Always start as empty dashed tiles. Dark .ang.has husks were the bug: the strip
   // claimed "has photo" before a blob arrived, and stayed black when the blob never did.
@@ -1376,25 +1384,21 @@ async function paintPhotoThumbs(row,id,k,o){
     `<span class="ang" data-slot="${i}" aria-hidden="true"><span class="ph-slot">${i+1}</span></span>`
   ).join('');
 
-  let cleared=false;
-  const claim=(i)=>legacy?(i<PHOTO_NEED):!!o.p[i];
+  const claim=(i)=>!!o.p[i];
 
   for(let i=0;i<PHOTO_MAX;i++){
     if(!claim(i)) continue;
     const el=wrap.querySelector('.ang[data-slot="'+i+'"]');
     if(!el) continue;
-    if(legacy){
-      // Legacy "photos done" has no bytes — keep the empty tile, do not invent black squares.
-      continue;
-    }
     try{
       let blob=await photoGet(photoSlotKey(id,k,i));
       if(!blob) blob=await fetchRemotePhoto(id,k,i,b,r,o);
-      // Empty / tiny blobs are leftover junk from a failed capture or wipe.
+      // Empty / tiny blobs, or a slot marked taken with nothing to show — free it.
       if(!blob||!blob.size||blob.size<32){
-        const key=photoSlotKey(id,k,i);
-        const gone=photoMiss.has(key)||!o.f[i];
-        if(gone){o.p[i]=false;o.f[i]=null;cleared=true;}
+        if(photoUploadPending(id,k,i)) continue;
+        o.p[i]=false;
+        o.f[i]=null;
+        cleared=true;
         continue;
       }
       const url=URL.createObjectURL(blob);
@@ -1437,6 +1441,9 @@ async function paintPhotoThumbs(row,id,k,o){
           addBtn.classList.toggle('done',n2>=PHOTO_NEED);
           addBtn.setAttribute('aria-pressed',n2>=PHOTO_NEED);
         }
+        row.classList.toggle('complete',complete(o));
+        const oldDot=row.querySelector('.dot');
+        if(oldDot) oldDot.outerHTML=dot(o);
       };
       link.appendChild(img);
       link.addEventListener('click',e=>{
@@ -1462,6 +1469,9 @@ async function paintPhotoThumbs(row,id,k,o){
     addBtn.classList.toggle('done',done);
     addBtn.setAttribute('aria-pressed',done);
   }
+  row.classList.toggle('complete',complete(o));
+  const oldDot=row.querySelector('.dot');
+  if(oldDot) oldDot.outerHTML=dot(o);
   const block=row.querySelector('.photos');
   if(block){
     const cls=n>=PHOTO_NEED?'pref':(n>0?'met':'');
@@ -1714,7 +1724,7 @@ function applyRemoteRows(rows){
     }else if(Array.isArray(o.p)&&o.p.some(Boolean)){
       syncPhotoFlag(o);
     }else{
-      o.ph=!!row.ph;
+      o.ph=false;
     }
     o.u=remoteU;
     hit.add(id);

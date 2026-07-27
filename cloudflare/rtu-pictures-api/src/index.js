@@ -409,9 +409,12 @@ async function registerPictureInMap(env, fileName) {
 async function unregisterPictureFromMap(env, fileName) {
   if (!supabaseReady(env)) return { ok: false, reason: "no-supabase" };
   if (!isAuditPhotoName(fileName)) return { ok: false, reason: "parse" };
+  // PostgREST treats bare parentheses in eq. filters as reserved; wrap the value in
+  // double quotes so "2300-RTU-01 (1) (Audit-2026).jpg" actually matches a row.
+  const quoted = `"${String(fileName).replace(/"/g, '\\"')}"`;
   const { error } = await supabaseCall(
     env,
-    `rtu_pictures?file_name=eq.${encodeURIComponent(fileName)}`,
+    `rtu_pictures?file_name=eq.${encodeURIComponent(quoted)}`,
     { method: "DELETE", headers: { Prefer: "return=minimal" } }
   );
   if (error) return { ok: false, reason: "delete", status: error };
