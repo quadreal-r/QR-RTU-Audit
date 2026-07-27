@@ -413,8 +413,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.59';
-const BUILD=70;
+const APP_VER='v1.1.60';
+const BUILD=71;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function isNativeShell(){
@@ -1320,8 +1320,12 @@ async function clearPhotoSlot(id,k,slot,row,bi,b,opts){
   // Drop any leftover custom metadata
   if(o.files&&typeof o.files==='object') delete o.files[slot];
   touch(id,k);persist(id);
-  if(row) refreshRow(id,k,row,bi,b);
-  toast('Photo deleted');
+  if(row){
+    // Rebuild the strip from current state so a wipe lands on the empty dashed tiles
+    // and "0 of 4", not leftover dark husks from the previous paint.
+    refreshRow(id,k,row,bi,b);
+  }
+  toast(photoCount(o)?'Photo deleted':'Photos cleared');
   return true;
 }
 async function paintPhotoThumbs(row,id,k,o){
@@ -1334,9 +1338,9 @@ async function paintPhotoThumbs(row,id,k,o){
   const addBtn=row.querySelector('.ph-add');
   const legacy=!!(o.ph && (!Array.isArray(o.p) || !o.p.some(Boolean)));
   const slots=Array.isArray(o.p)?o.p:[false,false,false,false];
-  const n=photoCount(o);
-  const done=n>=PHOTO_NEED;
-  const full=n>=PHOTO_MAX;
+  let n=photoCount(o);
+  let done=n>=PHOTO_NEED;
+  let full=n>=PHOTO_MAX;
   if(addBtn){
     addBtn.disabled=full;
     addBtn.classList.toggle('done',done);
@@ -1355,14 +1359,34 @@ async function paintPhotoThumbs(row,id,k,o){
       openPhotoViewer(el.dataset.blobUrl,{id,k,slot,row,bi,b,r,file});
     });
   });
-  for(const el of wrap.querySelectorAll('.ang.has')){
+  let cleared=false;
+  for(const el of [...wrap.querySelectorAll('.ang.has')]){
     const i=+el.dataset.slot;
     if(legacy) continue;
     try{
       let blob=await photoGet(photoSlotKey(id,k,i));
       // Shot on another device: pull it now that someone is actually looking at it.
       if(!blob) blob=await fetchRemotePhoto(id,k,i,b,r,o);
-      if(!blob) continue;
+      if(!blob){
+        // Never leave a dark "has" tile with nothing inside — that is what a delete
+        // looked like when the slot flag outlived the image. Fall back to the empty
+        // dashed placeholder. If the object is gone for good (404) or was never
+        // published, clear the slot so the count returns to the default too.
+        const key=photoSlotKey(id,k,i);
+        const gone=photoMiss.has(key)||!(Array.isArray(o.f)&&o.f[i]);
+        const empty=document.createElement('span');
+        empty.className='ang';
+        empty.dataset.slot=String(i);
+        empty.setAttribute('aria-hidden','true');
+        empty.innerHTML='<span class="ph-slot">'+(i+1)+'</span>';
+        el.replaceWith(empty);
+        if(gone){
+          ensurePhotoSlots(o);ensurePhotoFiles(o);
+          o.p[i]=false;o.f[i]=null;
+          cleared=true;
+        }
+        continue;
+      }
       if(el.dataset.blobUrl){try{URL.revokeObjectURL(el.dataset.blobUrl);}catch(_){}}
       const url=URL.createObjectURL(blob);
       el.dataset.blobUrl=url;
@@ -1378,7 +1402,36 @@ async function paintPhotoThumbs(row,id,k,o){
       if(!img){img=document.createElement('img');el.appendChild(img);}
       img.alt=fname.replace(/\.jpg$/i,'');
       img.src=url;
-    }catch(_){}
+    }catch(_){
+      // Same fallback as a missing blob: empty tile beats a black square.
+      try{
+        const empty=document.createElement('span');
+        empty.className='ang';
+        empty.dataset.slot=String(i);
+        empty.setAttribute('aria-hidden','true');
+        empty.innerHTML='<span class="ph-slot">'+(i+1)+'</span>';
+        el.replaceWith(empty);
+      }catch(__){}
+    }
+  }
+  if(cleared){
+    syncPhotoFlag(o);
+    touch(id,k);persist(id);
+  }
+  n=photoCount(o);
+  done=n>=PHOTO_NEED;
+  full=n>=PHOTO_MAX;
+  if(addBtn){
+    addBtn.disabled=full;
+    addBtn.classList.toggle('done',done);
+    addBtn.setAttribute('aria-pressed',done);
+  }
+  const block=row.querySelector('.photos');
+  if(block){
+    const cls=n>=PHOTO_NEED?'pref':(n>0?'met':'');
+    block.classList.remove('met','pref');if(cls)block.classList.add(cls);
+    const hint=block.querySelector('.phint');
+    if(hint){hint.textContent=n+' of '+PHOTO_MAX;hint.classList.remove('met','pref');if(cls)hint.classList.add(cls);}
   }
 }
 
