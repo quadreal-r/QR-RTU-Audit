@@ -306,11 +306,99 @@ async function supabaseCall(env, path, init = {}) {
     },
   });
   if (!res.ok) return { error: res.status };
+  // Prefer: return=minimal yields an empty body on success — that is not a failure.
+  const text = await res.text();
+  if (!text) return { data: null };
   try {
-    return { data: await res.json() };
+    return { data: JSON.parse(text) };
   } catch {
     return { error: 502 };
   }
+}
+
+/**
+ * Map badge counts come from Supabase `rtu_pictures`, not from a live R2 listing.
+ * Until this runs, an Audit upload lands in the bucket but the Industrial map stays
+ * stuck on whatever row was there before. Failure here must never fail the upload —
+ * the object is already in R2, and a later reconcile can catch up.
+ */
+function parseAuditPhotoParts(fileName) {
+  const m = String(fileName).match(
+    /^(\d+)-([A-Za-z0-9_-]+) \((\d{1,2})\) \(Audit-\d{4}\)\.(?:jpg|jpeg|png)$/i
+  );
+  if (!m) return null;
+  return {
+    buildingNum: m[1],
+    rtuToken: m[2].replace(/_/g, "-"),
+    slot: Number(m[3]),
+  };
+}
+
+function unitCoreFromToken(token) {
+  const stripped = String(token || "")
+    .replace(/^(?:RTU?S?|RTU#|RT|S)[-_\s#]?/i, "")
+    .trim();
+  const m = stripped.match(/^0*(\d+)/);
+  return m ? String(Number(m[1])) : null;
+}
+
+function streetNumber(address) {
+  return String(address || "").match(/^\d+/)?.[0] || "";
+}
+
+async function registerPictureInMap(env, fileName) {
+  if (!supabaseReady(env)) return { ok: false, reason: "no-supabase" };
+  const parts = parseAuditPhotoParts(fileName);
+  if (!parts || !parts.slot) return { ok: false, reason: "parse" };
+
+  const { data: buildings, error: bErr } = await supabaseCall(
+    env,
+    `buildings?select=id,address&address=like.${encodeURIComponent(parts.buildingNum + "*")}&limit=50`
+  );
+  if (bErr || !Array.isArray(buildings) || !buildings.length) {
+    return { ok: false, reason: "building" };
+  }
+  const building = buildings.find((b) => streetNumber(b.address) === parts.buildingNum);
+  if (!building) return { ok: false, reason: "building" };
+
+  const { data: rtus, error: rErr } = await supabaseCall(
+    env,
+    `rtus?select=id,name,building_id&building_id=eq.${encodeURIComponent(building.id)}&limit=500`
+  );
+  if (rErr || !Array.isArray(rtus) || !rtus.length) {
+    return { ok: false, reason: "rtu" };
+  }
+
+  const wantCore = unitCoreFromToken(parts.rtuToken);
+  const wantToken = parts.rtuToken.toUpperCase();
+  let rtu =
+    rtus.find((r) => String(r.name || "").replace(/\s+/g, "").toUpperCase() === wantToken) ||
+    null;
+  if (!rtu && wantCore) {
+    const matches = rtus.filter((r) => unitCoreFromToken(r.name) === wantCore);
+    if (matches.length === 1) rtu = matches[0];
+  }
+  if (!rtu) return { ok: false, reason: "rtu" };
+
+  const row = {
+    rtu_id: rtu.id,
+    building_address: building.address,
+    rtu_name: rtu.name,
+    file_name: fileName,
+    position: Math.max(0, parts.slot - 1),
+    hidden: false,
+  };
+  const { error } = await supabaseCall(
+    env,
+    "rtu_pictures?on_conflict=building_address,rtu_name,file_name",
+    {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify([row]),
+    }
+  );
+  if (error) return { ok: false, reason: "upsert", status: error };
+  return { ok: true, building: building.address, rtu: rtu.name };
 }
 
 const BUILDING_SLUG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
@@ -561,7 +649,15 @@ export default {
           ...uploadMetadata(request),
         },
       });
-      return json(request, { ok: true, key: objectKey });
+      // Best-effort: keep the Industrial map badge in step with the bucket. A miss
+      // here still leaves the object in R2 for a later reconcile.
+      let map = null;
+      try {
+        map = await registerPictureInMap(env, objectKey);
+      } catch (_) {
+        map = { ok: false, reason: "exception" };
+      }
+      return json(request, { ok: true, key: objectKey, mapRegistered: !!(map && map.ok) });
     }
 
     // Photos are taken on one device and viewed on another, so a signed-in device can

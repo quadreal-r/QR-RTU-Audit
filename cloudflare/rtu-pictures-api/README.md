@@ -68,6 +68,12 @@ This matches the existing RTU inventory that QR East Industrial already ingests,
 re-uploaded by "Upload all pictures" **replaces** the previous copy in place rather than
 accumulating duplicates. Uploading is therefore idempotent per RTU photo slot.
 
+After a successful R2 write the Worker also upserts a row into Supabase `rtu_pictures`
+(the table the Industrial map badge reads). Without that step the object sits in the bucket
+while the map stays stuck on the previous count until someone runs
+`npm run reconcile-rtu-pictures` in `QR-East_Industrial_Database`. The upsert is best-effort:
+a matching failure never fails the upload, and a later reconcile can still catch up.
+
 Because the client chooses the key, the Worker only accepts names matching
 `<code>-<RTU label> (<slot>) (Audit-<year>).<jpg|jpeg|png>` and rejects anything else with
 `400`. Without that check, an authenticated caller could overwrite unrelated objects in a
