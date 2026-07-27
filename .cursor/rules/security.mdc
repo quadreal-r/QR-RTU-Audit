@@ -13,8 +13,8 @@ Three surfaces, no framework, no bundler:
 1. `index.html` — a single self-contained SPA (inline CSS/JS, base64 assets, embedded
    `DATA` inventory). Progress in `localStorage` (`qr_rtu_v3:*`), audit photos in
    IndexedDB (`qr_rtu_photos_v1`), Cloudflare session token in `sessionStorage`.
-2. Native shells that embed a byte-identical copy of `index.html`: Android WebView
-   (`android/`) and iOS WKWebView (`ios/`). Not Capacitor, not Cordova.
+2. Native Capacitor shells that embed a byte-identical copy of `index.html`: Android
+   WebView (`android/`) and iOS WKWebView (`ios/`).
 3. `cloudflare/rtu-pictures-api` — a Worker that authenticates staff and streams photos
    into the R2 bucket `rtu-pictures`.
 
@@ -81,8 +81,9 @@ customer PII and no payment data. Treat photo GPS + notes as the sensitive core.
 ## Before you ship
 
 - Bump `APP_VER` and `BUILD` in `index.html` (see `version-bump.mdc`).
-- Re-run the sync scripts so `android/app/src/main/assets/www/` and `ios/QR-RTU-Audit/www/`
-  stay byte-identical to the root copies. Drift here means the shells ship stale code.
+- Re-run `npm run sync` so `www/`, `android/app/src/main/assets/public/`, and
+  `ios/App/App/public/` stay byte-identical to the root copies. Drift here means the
+  shells ship stale code.
 - Keep Android `versionName` in step with `APP_VER`.
 - If you touched the Worker: brute-force `/api/login` and confirm a 429; PUT a 50 MB body
   and confirm rejection; PUT `text/html` and confirm rejection; call the API from an

@@ -11,9 +11,8 @@
 Mirror of the security baseline “Before you ship” section — tick these before requesting review:
 
 - [ ] **Version** — `APP_VER` and `BUILD` bumped in root `index.html` if that file changed.
-- [ ] **Asset sync** — re-ran `android/sync-web-assets.ps1` and `ios/sync-web-assets.ps1` (or `.sh`) so
-      `android/app/src/main/assets/www/` and `ios/QR-RTU-Audit/www/` stay byte-identical to root
-      `index.html` / `piexif.js`.
+- [ ] **Asset sync** — re-ran `npm run sync` so `www/`, `android/app/src/main/assets/public/`,
+      and `ios/App/App/public/` stay byte-identical to root `index.html` / `piexif.js`.
 - [ ] **Android versionName** — kept in step with `APP_VER` when shipping a shell release.
 - [ ] **No secrets** — nothing new in `wrangler.jsonc`, client code, or docs that belongs in
       `wrangler secret put` / gitignored keystore files. `.wrangler/` stays untracked.
