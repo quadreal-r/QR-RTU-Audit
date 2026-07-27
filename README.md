@@ -38,7 +38,7 @@ Anyone sent the tracker URL can add a Home Screen shortcut without an app store.
 - **Chrome / Edge (Android, desktop)** — uses the browser's own install prompt when available.
 - **iPhone / iPad** — Safari has no install API, so the button shows the Share → Add to Home Screen steps.
 
-`manifest.webmanifest` and `sw.js` live at the repo root and are copied into `www/` by `npm run build:web`, which also stamps `APP_VER` into the service worker's cache name so a deploy can never be served from a stale cache. Icons are generated from the iOS app icon by `scripts/make-pwa-icons.ps1`.
+`manifest.webmanifest` and `sw.js` live at the repo root and are copied into `www/` by `npm run build:web`, which also stamps `APP_VER` into the service worker's cache name so a deploy can never be served from a stale cache. Icons (including Safari's `apple-touch-icon`) are generated from `assets/icon.png` by `scripts/make-pwa-icons.ps1`.
 
 The service worker is network-first: online you always get the newest build, offline you get the last one that loaded. It only ever caches same-origin app files — audit rows, photos and tokens are cross-origin and pass straight through, so nothing sensitive lands in Cache Storage. It is skipped inside the Capacitor shells, which already ship the app.
 

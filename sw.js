@@ -12,7 +12,7 @@
 // Rewritten by build:web from APP_VER in index.html, so a deploy always lands in a fresh
 // cache. Kept literal rather than a placeholder because GitHub Pages serves this file
 // straight from the repo root, without a build step.
-const VERSION = 'v1.1.69';
+const VERSION = 'v1.1.70';
 const CACHE = 'rtu-shell-' + VERSION;
 
 const SHELL = [
@@ -24,6 +24,8 @@ const SHELL = [
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',
+  './icons/apple-touch-icon.png',
+  './icons/favicon-32.png',
 ];
 
 self.addEventListener('install', (event) => {
