@@ -2,7 +2,9 @@
  * Copy / bundle the root web app into www/ for Capacitor and Cloudflare deploys.
  * Root index.html + piexif.js + native-bridge.js remain the source of truth.
  */
-import { mkdirSync, copyFileSync, existsSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync, copyFileSync, existsSync, rmSync, writeFileSync, readFileSync, readdirSync,
+} from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
@@ -15,11 +17,33 @@ if (existsSync(www)) {
 }
 mkdirSync(www, { recursive: true });
 
+const indexHtml = readFileSync(join(root, 'index.html'), 'utf8');
 copyFileSync(join(root, 'index.html'), join(www, 'index.html'));
 console.log('[build:web] copied index.html');
 
 copyFileSync(join(root, 'piexif.js'), join(www, 'piexif.js'));
 console.log('[build:web] copied piexif.js');
+
+copyFileSync(join(root, 'manifest.webmanifest'), join(www, 'manifest.webmanifest'));
+console.log('[build:web] copied manifest.webmanifest');
+
+const icons = join(root, 'icons');
+mkdirSync(join(www, 'icons'), { recursive: true });
+for (const name of readdirSync(icons)) {
+  copyFileSync(join(icons, name), join(www, 'icons', name));
+}
+console.log('[build:web] copied icons/');
+
+// The service worker's cache name carries APP_VER, so a stale build cannot survive a
+// deploy. index.html stays the single source of that version.
+const appVer = indexHtml.match(/const\s+APP_VER\s*=\s*'([^']+)'/)?.[1];
+if (!appVer) {
+  console.error('[build:web] could not read APP_VER from index.html');
+  process.exit(1);
+}
+const sw = readFileSync(join(root, 'sw.js'), 'utf8').replace('__APP_VER__', appVer);
+writeFileSync(join(www, 'sw.js'), sw);
+console.log(`[build:web] wrote sw.js (${appVer})`);
 
 const bridgeSrc = join(root, 'native-bridge.js');
 if (!existsSync(bridgeSrc)) {
