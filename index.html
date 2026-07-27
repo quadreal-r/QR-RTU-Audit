@@ -365,7 +365,7 @@
         <div class="rowbtns" id="cfSignedBox" hidden>
           <button type="button" class="btn" id="cfSignOut">Sign out</button>
         </div>
-        <p style="margin:0;font-size:12px;color:var(--muted);line-height:1.45">Stay signed in while this app is open. Closing the app signs you out.</p>
+        <p style="margin:0;font-size:12px;color:var(--muted);line-height:1.45" id="cfSessionHint">On a phone, sign-in lasts up to 8 hours across app restarts. In a desktop browser it lasts until you close the tab. Sign out when you hand the device off.</p>
       </div>
       <div class="sec">
         <h3>Shared database</h3>
@@ -421,12 +421,44 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.56';
-const BUILD=67;
+const APP_VER='v1.1.57';
+const BUILD=68;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
-function cfGetToken(){try{return sessionStorage.getItem(CF_SESSION_KEY)||'';}catch(_){return '';}}
-function cfSetToken(t){try{if(t)sessionStorage.setItem(CF_SESSION_KEY,t);else sessionStorage.removeItem(CF_SESSION_KEY);}catch(_){}}
+function isNativeShell(){
+  try{
+    const cap=window.Capacitor;
+    return !!(cap&&typeof cap.isNativePlatform==='function'&&cap.isNativePlatform());
+  }catch(_){return false;}
+}
+// Desktop tabs use sessionStorage so closing the tab signs you out. Capacitor shells
+// cannot: Android (and sometimes iOS) kill the WebView process while the app is in the
+// background, which wipes sessionStorage and silently stops sync until someone notices
+// the red dot. Tokens already expire after 8 hours on the Worker, so localStorage on the
+// shells is the right trade-off.
+function cfTokenStore(){return isNativeShell()?localStorage:sessionStorage;}
+function cfGetToken(){
+  try{
+    const primary=cfTokenStore().getItem(CF_SESSION_KEY)||'';
+    if(primary) return primary;
+    const other=isNativeShell()?sessionStorage:localStorage;
+    const legacy=other.getItem(CF_SESSION_KEY)||'';
+    if(legacy){
+      cfTokenStore().setItem(CF_SESSION_KEY,legacy);
+      other.removeItem(CF_SESSION_KEY);
+      return legacy;
+    }
+    return '';
+  }catch(_){return '';}
+}
+function cfSetToken(t){
+  try{
+    const store=cfTokenStore();
+    const other=isNativeShell()?sessionStorage:localStorage;
+    if(t){store.setItem(CF_SESSION_KEY,t);other.removeItem(CF_SESSION_KEY);}
+    else{store.removeItem(CF_SESSION_KEY);other.removeItem(CF_SESSION_KEY);}
+  }catch(_){}
+}
 function cfSignedIn(){return !!cfGetToken();}
 function cfClearSessionOnUnauthorized(res){
   if(res&&res.status===401){cfSetToken('');try{refreshCfStatus();}catch(_){}
@@ -1820,7 +1852,10 @@ function refreshCfStatus(){
   const signed=document.getElementById('cfSignedBox');
   const btn=document.getElementById('settingsBtn');
   const on=cfSignedIn();
-  if(st){st.textContent=on?'Signed in (this session)':'Signed out';st.classList.toggle('on',on);}
+  if(st){
+    st.textContent=on?(isNativeShell()?'Signed in on this phone':'Signed in (this tab)'):'Signed out';
+    st.classList.toggle('on',on);
+  }
   if(login) login.hidden=on;
   if(signed) signed.hidden=!on;
   if(btn){
