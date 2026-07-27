@@ -13,6 +13,10 @@ const SYNC_MAX_CHANGES = 500;
 const SYNC_MAX_BODY_BYTES = 1 * 1024 * 1024; // 1 MB
 const NOTE_MAX = 4000;
 const ALLOWED_ORIGINS = new Set([
+  // The tracker served to desktop browsers by the rtu-qr-tracker Worker. Same first-party
+  // app as the shells, just a different origin, and without this every desktop sign-in is
+  // blocked by the browser before the password is even checked.
+  "https://rtu-qr-tracker.quadreal-rpiwin.workers.dev",
   // Capacitor shells: iOS uses the default `capacitor` scheme, Android follows
   // `androidScheme: 'https'` from capacitor.config.ts.
   "capacitor://localhost",
