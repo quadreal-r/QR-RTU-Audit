@@ -438,8 +438,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.77';
-const BUILD=88;
+const APP_VER='v1.1.78';
+const BUILD=89;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function isNativeShell(){
@@ -680,6 +680,54 @@ function photoClearAllLocal(){
     tx.oncomplete=()=>{invalidateLocalPhotoCache();resolve(true);};
     tx.onerror=()=>reject(tx.error);
   })).catch(()=>false);
+}
+function parsePhotoSlotKey(key){
+  if(typeof key!=='string') return null;
+  const parts=key.split('|');
+  if(parts.length<3) return null;
+  const slot=parseInt(parts[parts.length-1],10);
+  if(!Number.isFinite(slot)||slot<0||slot>=PHOTO_MAX) return null;
+  return {id:parts[0],k:parts.slice(1,-1).join('|'),slot};
+}
+/**
+ * Drop IndexedDB blobs (and stale upload-queue jobs) that no longer match a claimed
+ * photo slot. Typical after a new-audit reset or a delete synced from another device:
+ * progress is empty but leftover files still inflate "on this device".
+ */
+async function pruneOrphanLocalPhotos(){
+  const pending=new Set();
+  const keepQueue=[];
+  loadUploadQueue().forEach(j=>{
+    const o=stateOf(j.id,j.k);
+    if(o&&Array.isArray(o.p)&&o.p[j.slot]){
+      keepQueue.push(j);
+      pending.add(photoSlotKey(j.id,j.k,j.slot));
+    }
+  });
+  if(keepQueue.length!==loadUploadQueue().length) saveUploadQueue(keepQueue);
+
+  const keys=await photoIdbKeys();
+  const drop=[];
+  keys.forEach(key=>{
+    if(pending.has(key)) return;
+    const parsed=parsePhotoSlotKey(key);
+    if(!parsed||!knownRtu(parsed.id,parsed.k)){drop.push(key);return;}
+    const o=stateOf(parsed.id,parsed.k);
+    if(o&&Array.isArray(o.p)&&o.p[parsed.slot]) return;
+    drop.push(key);
+  });
+  if(!drop.length) return 0;
+  try{
+    await idbOpen().then(db=>new Promise((resolve,reject)=>{
+      const tx=db.transaction(PHOTO_STORE,'readwrite');
+      const store=tx.objectStore(PHOTO_STORE);
+      drop.forEach(k=>store.delete(k));
+      tx.oncomplete=()=>resolve(true);
+      tx.onerror=()=>reject(tx.error);
+    }));
+  }catch(_){return 0;}
+  invalidateLocalPhotoCache();
+  return drop.length;
 }
 /** Keys look like buildingId|rtuKey|slot — used to scope on-device counts per property. */
 function photoKeyBuildingId(key){
@@ -1882,10 +1930,13 @@ function applyRemoteRows(rows){
         if(pending&&pending.has(i)) continue; // our own shot has not been published yet
         const name=rf[i]||null;
         const prev=o.f[i]||null;
+        const hadLocal=!!(o.p&&o.p[i]);
         o.f[i]=name;
         o.p[i]=!!name;
-        // Map (or another device) removed the published file — drop the local blob too.
-        if(prev && !name){
+        // Slot empty on the shared row — drop any local blob, even if it was never
+        // published (prev null). That is how a new-audit reset on another phone leaves
+        // orphan "on this device" counts behind.
+        if(!name && (prev || hadLocal)){
           dequeuePhotoUpload(id,k,i);
           photoDel(photoSlotKey(id,k,i)).catch(()=>{});
         }
@@ -1945,6 +1996,13 @@ async function syncNow(){
     syncLastAt=Date.now();syncFailed=false;
     // A backlog bigger than one batch keeps going rather than waiting for the next edit.
     if(syncQueue.size) syncRerun=true;
+    // Shared clears can leave IndexedDB orphans when this device never had o.f set.
+    if(changed){
+      try{
+        const n=await pruneOrphanLocalPhotos();
+        if(n) changed=true;
+      }catch(_){}
+    }
   }catch(err){
     syncFailed=true;
   }finally{
@@ -2524,5 +2582,15 @@ function wireSettingsOnce(){
   refreshInstallUI();
 }
 
-(async function(){await loadAll();wireSettingsOnce();render();refreshCfStatus();refreshInstallUI();registerServiceWorker();applyScreenTimeout(getScreenTimeoutMins(),false);startSync();})();
+(async function(){
+  await loadAll();
+  try{await pruneOrphanLocalPhotos();}catch(_){}
+  wireSettingsOnce();
+  render();
+  refreshCfStatus();
+  refreshInstallUI();
+  registerServiceWorker();
+  applyScreenTimeout(getScreenTimeoutMins(),false);
+  startSync();
+})();
 </script>

@@ -12,7 +12,7 @@
 // Rewritten by build:web from APP_VER in index.html, so a deploy always lands in a fresh
 // cache. Kept literal rather than a placeholder because GitHub Pages serves this file
 // straight from the repo root, without a build step.
-const VERSION = 'v1.1.77';
+const VERSION = 'v1.1.78';
 const CACHE = 'rtu-shell-' + VERSION;
 
 const SHELL = [
