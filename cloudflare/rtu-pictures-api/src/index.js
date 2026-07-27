@@ -421,6 +421,52 @@ async function unregisterPictureFromMap(env, fileName) {
   return { ok: true };
 }
 
+/**
+ * Map deletes and audit deletes both remove the R2 object; audit devices only drop a slot
+ * when rtu_audit_state.photo_files is cleared and its updated_at advances. Scan by rtu key
+ * parsed from the audit filename so we do not need the building slug on DELETE.
+ */
+async function clearAuditStatePhotoFile(env, fileName) {
+  if (!supabaseReady(env)) return { ok: false, reason: "no-supabase" };
+  const parts = parseAuditPhotoParts(fileName);
+  if (!parts) return { ok: false, reason: "parse" };
+  const { data, error } = await supabaseCall(
+    env,
+    `rtu_audit_state?select=${AUDIT_COLUMNS}&rtu_key=eq.${encodeURIComponent(parts.rtuToken)}&limit=50`
+  );
+  if (error || !Array.isArray(data)) return { ok: false, reason: "select", status: error };
+  let cleared = 0;
+  for (const row of data) {
+    const files = Array.isArray(row.photo_files) ? row.photo_files.slice() : [];
+    let changed = false;
+    for (let i = 0; i < files.length; i++) {
+      if (files[i] === fileName) {
+        files[i] = null;
+        changed = true;
+      }
+    }
+    if (!changed) continue;
+    const named = files.filter((entry) => typeof entry === "string" && entry.length > 0);
+    const body = {
+      photo_files: files,
+      photos_done: named.length >= 3,
+      updated_at: new Date().toISOString(),
+      updated_by: "audit-photo-delete",
+    };
+    const { error: upErr } = await supabaseCall(
+      env,
+      `rtu_audit_state?building_slug=eq.${encodeURIComponent(row.building_slug)}&rtu_key=eq.${encodeURIComponent(row.rtu_key)}`,
+      {
+        method: "PATCH",
+        headers: { Prefer: "return=minimal" },
+        body: JSON.stringify(body),
+      }
+    );
+    if (!upErr) cleared += 1;
+  }
+  return { ok: true, cleared };
+}
+
 const BUILDING_SLUG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 const RTU_KEY = /^[A-Za-z0-9][A-Za-z0-9 ._()/-]{0,63}$/;
 
@@ -718,15 +764,26 @@ export default {
 
       if (request.method === "DELETE") {
         await env.PICTURES.delete(key);
-        // Best-effort map cleanup. R2 is already clear; a miss here only leaves a stale
-        // badge until reconcile, which is preferable to failing the delete.
+        // Best-effort map + audit-state cleanup. R2 is already clear; a miss here only
+        // leaves a stale badge/slot until reconcile, which is preferable to failing delete.
         let map = null;
+        let audit = null;
         try {
           map = await unregisterPictureFromMap(env, key);
         } catch (_) {
           map = { ok: false, reason: "exception" };
         }
-        return json(request, { ok: true, key, mapUnregistered: !!(map && map.ok) });
+        try {
+          audit = await clearAuditStatePhotoFile(env, key);
+        } catch (_) {
+          audit = { ok: false, reason: "exception" };
+        }
+        return json(request, {
+          ok: true,
+          key,
+          mapUnregistered: !!(map && map.ok),
+          auditCleared: !!(audit && audit.ok && audit.cleared),
+        });
       }
 
       const object = await env.PICTURES.get(key);

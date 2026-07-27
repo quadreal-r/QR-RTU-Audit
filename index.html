@@ -413,8 +413,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.64';
-const BUILD=75;
+const APP_VER='v1.1.65';
+const BUILD=76;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function isNativeShell(){
@@ -1717,8 +1717,14 @@ function applyRemoteRows(rows){
       for(let i=0;i<PHOTO_MAX;i++){
         if(pending&&pending.has(i)) continue; // our own shot has not been published yet
         const name=rf[i]||null;
+        const prev=o.f[i]||null;
         o.f[i]=name;
         o.p[i]=!!name;
+        // Map (or another device) removed the published file — drop the local blob too.
+        if(prev && !name){
+          dequeuePhotoUpload(id,k,i);
+          photoDel(photoSlotKey(id,k,i)).catch(()=>{});
+        }
       }
       syncPhotoFlag(o);
     }else if(Array.isArray(o.p)&&o.p.some(Boolean)){
