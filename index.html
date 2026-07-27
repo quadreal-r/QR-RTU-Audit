@@ -423,8 +423,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.73';
-const BUILD=84;
+const APP_VER='v1.1.74';
+const BUILD=85;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function isNativeShell(){
@@ -637,7 +637,7 @@ function photoPut(key,blob){
   return idbOpen().then(db=>new Promise((resolve,reject)=>{
     const tx=db.transaction(PHOTO_STORE,'readwrite');
     tx.objectStore(PHOTO_STORE).put(blob,key);
-    tx.oncomplete=()=>resolve(true);
+    tx.oncomplete=()=>{invalidateLocalPhotoCache();resolve(true);};
     tx.onerror=()=>reject(tx.error);
   }));
 }
@@ -653,9 +653,75 @@ function photoDel(key){
   return idbOpen().then(db=>new Promise((resolve,reject)=>{
     const tx=db.transaction(PHOTO_STORE,'readwrite');
     tx.objectStore(PHOTO_STORE).delete(key);
-    tx.oncomplete=()=>resolve(true);
+    tx.oncomplete=()=>{invalidateLocalPhotoCache();resolve(true);};
     tx.onerror=()=>reject(tx.error);
   }));
+}
+/** Keys look like buildingId|rtuKey|slot — used to scope on-device counts per property. */
+function photoKeyBuildingId(key){
+  if(typeof key!=='string') return '';
+  const i=key.indexOf('|');
+  return i>0?key.slice(0,i):'';
+}
+let localPhotoCache={all:null,byProp:{}};
+let localPhotoCountInflight=null;
+function invalidateLocalPhotoCache(){
+  localPhotoCache={all:null,byProp:{}};
+  queueHeroPhotoRefresh();
+}
+function photoIdbKeys(){
+  return idbOpen().then(db=>new Promise((resolve,reject)=>{
+    const tx=db.transaction(PHOTO_STORE,'readonly');
+    const req=tx.objectStore(PHOTO_STORE).getAllKeys();
+    req.onsuccess=()=>resolve(Array.isArray(req.result)?req.result:[]);
+    req.onerror=()=>reject(req.error);
+  })).catch(()=>[]);
+}
+async function ensureLocalPhotoCounts(){
+  if(localPhotoCache.all!=null) return localPhotoCache;
+  if(localPhotoCountInflight) return localPhotoCountInflight;
+  localPhotoCountInflight=(async()=>{
+    const keys=await photoIdbKeys();
+    const byProp={};
+    DATA.forEach(p=>{
+      const ids=new Set(p.buildings.map(b=>b.id));
+      let n=0;
+      keys.forEach(key=>{if(ids.has(photoKeyBuildingId(key))) n++;});
+      byProp[p._i]=n;
+    });
+    localPhotoCache={all:keys.length,byProp};
+    localPhotoCountInflight=null;
+    return localPhotoCache;
+  })();
+  try{return await localPhotoCountInflight;}
+  catch(_){localPhotoCountInflight=null;return localPhotoCache;}
+}
+function cachedLocalPhotoCountAll(){
+  return localPhotoCache.all;
+}
+function cachedPropLocalPhotoCount(p){
+  if(!p||p._i==null) return null;
+  const v=localPhotoCache.byProp[p._i];
+  return (v==null)?null:v;
+}
+let heroPhotoRefreshTimer=null;
+function queueHeroPhotoRefresh(){
+  clearTimeout(heroPhotoRefreshTimer);
+  heroPhotoRefreshTimer=setTimeout(()=>{refreshHeroPhotoSummary().catch(()=>{});},40);
+}
+async function refreshHeroPhotoSummary(){
+  await ensureLocalPhotoCounts();
+  const heroCap=document.querySelector('.hero .cap span');
+  if(!heroCap) return;
+  if(view.level==='props'){
+    const ov=overallAll();
+    const pct=ov.tot?Math.round(ov.done/ov.tot*100):0;
+    heroCap.textContent=pct+'% complete · '+photoSummaryLabel(cachedLocalPhotoCountAll(),cloudPhotoCountAll());
+  }else if(view.level==='buildings' && DATA[view.pi]){
+    const p=DATA[view.pi];
+    const s=propStats(p);
+    heroCap.textContent=s.done+'/'+s.tot+' units complete · '+photoSummaryLabel(cachedPropLocalPhotoCount(p),propCloudPhotoCount(p));
+  }
 }
 function ensurePhotoSlots(o){
   if(!o.p || !Array.isArray(o.p)) o.p=[false,false,false,false];
@@ -820,17 +886,27 @@ function complete(o){return doneTasks(o)===taskNeed();}
 function propStats(p){let done=0,tot=0;p.buildings.forEach(b=>{b.rtus.forEach(r=>{tot++;if(complete(stateOf(b.id,r.k)))done++;});});return{done,tot};}
 function bldStats(b){let done=0;b.rtus.forEach(r=>{if(complete(stateOf(b.id,r.k)))done++;});return{done,tot:b.rtus.length};}
 function overall(list){let done=0,tot=0;list.forEach(p=>{const s=propStats(p);done+=s.done;tot+=s.tot;});return{done,tot};}
-function photoCountAll(){
-  let n=0;
-  DATA.forEach(p=>p.buildings.forEach(b=>b.rtus.forEach(r=>{n+=photoCount(stateOf(b.id,r.k));})));
+function cloudPhotoCount(o){
+  if(!o||!Array.isArray(o.f)) return 0;
+  let n=0;for(let i=0;i<o.f.length&&i<PHOTO_MAX;i++) if(o.f[i]) n++;
   return n;
 }
-function propPhotoCount(p){
+function cloudPhotoCountAll(){
   let n=0;
-  p.buildings.forEach(b=>b.rtus.forEach(r=>{n+=photoCount(stateOf(b.id,r.k));}));
+  DATA.forEach(p=>p.buildings.forEach(b=>b.rtus.forEach(r=>{n+=cloudPhotoCount(stateOf(b.id,r.k));})));
   return n;
 }
-function photosLabel(n){return n.toLocaleString()+' photo'+(n===1?'':'s');}
+function propCloudPhotoCount(p){
+  let n=0;
+  p.buildings.forEach(b=>b.rtus.forEach(r=>{n+=cloudPhotoCount(stateOf(b.id,r.k));}));
+  return n;
+}
+/** Banner line: on-device blobs vs published Cloudflare names (a photo can count in both). */
+function photoSummaryLabel(local,cloud){
+  const here=(local==null)?'…':Number(local).toLocaleString();
+  const up=Number(cloud||0).toLocaleString();
+  return here+' on this device · '+up+' on cloud';
+}
 const WARN=/redundant|do not replace|removed|disconnect|relocat/i;
 
 /* ---------------- indicators ---------------- */
@@ -1000,7 +1076,8 @@ function matchSummary(list){
 function renderProps(){
   const list=visibleProps();
   const ov=overallAll();
-  const pics=photoCountAll();
+  const cloud=cloudPhotoCountAll();
+  const local=cachedLocalPhotoCountAll();
   const pct=ov.tot?Math.round(ov.done/ov.tot*100):0;
   const q=filters.q.trim();
   const searching=!!q;
@@ -1020,7 +1097,7 @@ function renderProps(){
     <h1><span class="big">${ov.done}</span> of ${ov.tot.toLocaleString()} units complete</h1>
     ${sub}
     <div class="track"><div class="fill" style="width:${pct}%"></div></div>
-    <div class="cap"><span>${pct}% complete · ${photosLabel(pics)}</span><span>${capRight}</span></div>
+    <div class="cap"><span>${pct}% complete · ${photoSummaryLabel(local,cloud)}</span><span>${capRight}</span></div>
   </section>${controlsHTML()}`;
 
   if(searching?!hits.length:!list.length){
@@ -1053,6 +1130,7 @@ function renderProps(){
   }
   html+='</div>'+dataCardHTML()+'<footer>QuadReal Property Group · RTU QR Code Program<br>Build '+BUILD+' · saves on device</footer>';
   app.innerHTML=html;wireControls();wireData();
+  queueHeroPhotoRefresh();
   app.querySelectorAll('.prow').forEach(el=>el.onclick=()=>{
     const pi=+el.dataset.pi;
     const bi=el.dataset.bi!=null?+el.dataset.bi:null;
@@ -1065,7 +1143,8 @@ function renderProps(){
 function renderBuildings(){
   const p=DATA[view.pi];
   const s=propStats(p); // full portfolio totals — search must not shrink these
-  const pics=propPhotoCount(p);
+  const cloud=propCloudPhotoCount(p);
+  const local=cachedPropLocalPhotoCount(p);
   const pct=s.tot?Math.round(s.done/s.tot*100):0;
   const q=filters.q.trim();
   const searching=!!q;
@@ -1080,7 +1159,7 @@ function renderBuildings(){
     <div class="eyebrow">${eyebrow}</div>
     <h1>${esc(p.property)}</h1>
     <div class="track"><div class="fill" style="width:${pct}%"></div></div>
-    <div class="cap"><span>${s.done}/${s.tot} units complete · ${photosLabel(pics)}</span><span>${searching?ms.rtus+' match'+(ms.rtus===1?'':'es'):pct+'%'}</span></div>
+    <div class="cap"><span>${s.done}/${s.tot} units complete · ${photoSummaryLabel(local,cloud)}</span><span>${searching?ms.rtus+' match'+(ms.rtus===1?'':'es'):pct+'%'}</span></div>
   </section>
   ${controlsHTML()}
   <div class="plist" style="margin-top:12px">`;
@@ -1117,6 +1196,7 @@ function renderBuildings(){
   html+='</div><footer>QuadReal Property Group · RTU QR Code Program<br>Build '+BUILD+' · saves on device</footer>';
   app.innerHTML=html;
   view.focusBi=null;
+  queueHeroPhotoRefresh();
   document.getElementById('back').onclick=()=>{view={level:'props',pi:null};render();window.scrollTo(0,0);};
   wireControls(true);
   app.querySelectorAll('.bhead').forEach(btn=>btn.onclick=()=>{const bld=btn.closest('.bld');const open=bld.classList.toggle('open');btn.setAttribute('aria-expanded',open);});
@@ -1509,12 +1589,7 @@ function refreshRow(id,k,row,bi,b){
   }
   row.classList.toggle('complete',complete(o));
   const c=bldStats(b);const bld=row.closest('.bld');bld.querySelector('.bcount').innerHTML=`<b>${c.done}</b>/${c.tot}`;
-  const heroCap=document.querySelector('.hero .cap span');
-  if(heroCap && view.level==='buildings' && DATA[view.pi]){
-    const p=DATA[view.pi];
-    const s=propStats(p);
-    heroCap.textContent=s.done+'/'+s.tot+' units complete · '+photosLabel(propPhotoCount(p));
-  }
+  queueHeroPhotoRefresh();
 }
 
 let toastT;
@@ -1893,7 +1968,7 @@ async function processUploadQueue(){
       if(cfClearSessionOnUnauthorized(res)) break;
       if(!res.ok) break;
       const o=stateOf(job.id,job.k);
-      if(o){ensurePhotoFiles(o);o.f[job.slot]=job.name;touch(job.id,job.k);persist(job.id);}
+      if(o){ensurePhotoFiles(o);o.f[job.slot]=job.name;touch(job.id,job.k);persist(job.id);queueHeroPhotoRefresh();}
       sent++;
       q.shift();saveUploadQueue(q);
     }
@@ -2166,7 +2241,7 @@ async function uploadAllPictures(){
       if(!res.ok){fail++;lastErr=err||('HTTP '+res.status);continue;}
       // Publishing the key is what lets other devices open this photo.
       const o=stateOf(job.b.id,job.r.k);
-      if(o){ensurePhotoFiles(o);o.f[job.slot]=job.name;touch(job.b.id,job.r.k);persist(job.b.id);}
+      if(o){ensurePhotoFiles(o);o.f[job.slot]=job.name;touch(job.b.id,job.r.k);persist(job.b.id);queueHeroPhotoRefresh();}
       ok++;
     }catch(e){fail++;lastErr=(e&&e.message)||'network error';}
   }
