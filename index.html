@@ -413,8 +413,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.60';
-const BUILD=71;
+const APP_VER='v1.1.61';
+const BUILD=72;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function isNativeShell(){
@@ -1298,14 +1298,48 @@ async function eraseDevicePhoto(id,k,slot,fname){
     }
   }catch(_){}
 }
+async function deleteCloudPhoto(fname){
+  if(!fname||!cfSignedIn()) return {ok:false,reason:'auth'};
+  try{
+    const res=await fetch(CF_API+'/api/photo/'+encodeURIComponent(fname),{
+      method:'DELETE',
+      headers:{'Authorization':'Bearer '+cfGetToken()}
+    });
+    if(cfClearSessionOnUnauthorized(res)) return {ok:false,reason:'auth'};
+    if(res.status===429) return {ok:false,reason:'rate'};
+    // 404 means it was already gone — treat as success so a second delete is clean.
+    if(res.status===404) return {ok:true,missing:true};
+    if(!res.ok) return {ok:false,reason:'http',status:res.status};
+    return {ok:true};
+  }catch(_){return {ok:false,reason:'network'};}
+}
 async function clearPhotoSlot(id,k,slot,row,bi,b,opts){
   opts=opts||{};
   const m=rec(id,k);const o=m.r[k];
   const wasLegacy=!!(o.ph && (!Array.isArray(o.p) || !o.p.some(Boolean)));
   if(!wasLegacy && !(Array.isArray(o.p) && o.p[slot])) return false;
-  if(!opts.skipConfirm && !confirm('Delete photo '+(slot+1)+' of '+PHOTO_MAX+'?\n\nThe slot is cleared on every device. Any copy already uploaded stays in the Cloudflare bucket.')) return false;
   const rObj=(b.rtus||[]).find(x=>x.k===k)||{k:k,name:k};
-  const fname=(Array.isArray(o.f)&&o.f[slot])||photoFileName(b,rObj,slot);
+  ensurePhotoFiles(o);
+  const published=o.f[slot]||null;
+  const fname=published||photoFileName(b,rObj,slot);
+  // A published name lives in R2. Deleting only locally would leave the map badge and
+  // the bucket lying — so sign-in is required when the cloud copy is known to exist.
+  if(published && !cfSignedIn()){
+    alert('Sign in first so this photo can be removed from Cloudflare too.');
+    openSettings();
+    return false;
+  }
+  if(!opts.skipConfirm && !confirm('Delete photo '+(slot+1)+' of '+PHOTO_MAX+'?\n\nThis removes it from every device and from the Cloudflare bucket.')) return false;
+  if(published){
+    const cloud=await deleteCloudPhoto(published);
+    if(!cloud.ok){
+      if(cloud.reason==='auth'){alert('Sign in expired. Sign in again, then delete the photo.');openSettings();return false;}
+      if(cloud.reason==='rate'){alert('Too many deletes right now. Wait a minute and try again.');return false;}
+      if(cloud.reason==='network'){alert('Could not reach Cloudflare. Check your connection and try again.');return false;}
+      alert('Cloudflare would not delete this photo (error '+(cloud.status||'?')+'). Nothing was changed.');
+      return false;
+    }
+  }
   // Revoke any live preview URL for this slot
   try{
     const el=row&&row.querySelector('.ang.has[data-slot="'+slot+'"]');

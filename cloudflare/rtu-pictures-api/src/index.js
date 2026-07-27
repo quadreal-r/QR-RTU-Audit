@@ -39,7 +39,7 @@ const SECURITY_HEADERS = {
 function corsHeaders(request) {
   const origin = request.headers.get("Origin") || "";
   const headers = {
-    "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers":
       "Authorization, Content-Type, X-Filename, X-Building-Id, X-Rtu-Key, X-Photo-Slot, X-Audit-Year",
     "Access-Control-Max-Age": "86400",
@@ -401,6 +401,23 @@ async function registerPictureInMap(env, fileName) {
   return { ok: true, building: building.address, rtu: rtu.name };
 }
 
+/**
+ * Drop the map badge row for a deleted object. Keyed only on file_name — that column is
+ * unique with building+rtu in practice for audit names, and PostgREST eq on the name is
+ * enough to remove every matching inventory row without guessing the address.
+ */
+async function unregisterPictureFromMap(env, fileName) {
+  if (!supabaseReady(env)) return { ok: false, reason: "no-supabase" };
+  if (!isAuditPhotoName(fileName)) return { ok: false, reason: "parse" };
+  const { error } = await supabaseCall(
+    env,
+    `rtu_pictures?file_name=eq.${encodeURIComponent(fileName)}`,
+    { method: "DELETE", headers: { Prefer: "return=minimal" } }
+  );
+  if (error) return { ok: false, reason: "delete", status: error };
+  return { ok: true };
+}
+
 const BUILDING_SLUG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 const RTU_KEY = /^[A-Za-z0-9][A-Za-z0-9 ._()/-]{0,63}$/;
 
@@ -661,12 +678,12 @@ export default {
     }
 
     // Photos are taken on one device and viewed on another, so a signed-in device can
-    // stream an object back out of R2. Same name allowlist as upload: the key comes from
-    // the client, and the bucket is shared with QR East Industrial.
+    // stream an object back out of R2 — or delete it. Same name allowlist as upload: the
+    // key comes from the client, and the bucket is shared with QR East Industrial.
     if (path.startsWith("/api/photo/")) {
-      if (request.method !== "GET") {
+      if (request.method !== "GET" && request.method !== "DELETE") {
         return json(request, { ok: false, error: "Method not allowed" }, 405, {
-          Allow: "GET, OPTIONS",
+          Allow: "GET, DELETE, OPTIONS",
         });
       }
       if (!requireAuthSecret(env)) {
@@ -679,8 +696,8 @@ export default {
 
       const limited = await rateLimitOr429(
         request,
-        env.DOWNLOAD_LIMITER,
-        `download:${await sha256Hex(token)}`,
+        request.method === "DELETE" ? env.UPLOAD_LIMITER : env.DOWNLOAD_LIMITER,
+        `${request.method === "DELETE" ? "delete" : "download"}:${await sha256Hex(token)}`,
         60
       );
       if (limited) return limited;
@@ -694,6 +711,19 @@ export default {
       const key = safeKey(name);
       if (!isAuditPhotoName(key)) {
         return json(request, { ok: false, error: "Not an audit photo name" }, 400);
+      }
+
+      if (request.method === "DELETE") {
+        await env.PICTURES.delete(key);
+        // Best-effort map cleanup. R2 is already clear; a miss here only leaves a stale
+        // badge until reconcile, which is preferable to failing the delete.
+        let map = null;
+        try {
+          map = await unregisterPictureFromMap(env, key);
+        } catch (_) {
+          map = { ok: false, reason: "exception" };
+        }
+        return json(request, { ok: true, key, mapUnregistered: !!(map && map.ok) });
       }
 
       const object = await env.PICTURES.get(key);

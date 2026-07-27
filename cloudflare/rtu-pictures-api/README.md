@@ -9,6 +9,7 @@ Cloudflare Worker that authenticates field staff, uploads RTU audit photos to R2
 - Session check: `GET /api/me` with `Authorization: Bearer <token>`
 - Upload: `PUT /api/upload/:filename` with `Authorization: Bearer <token>` and raw JPEG/PNG body (max 12 MB)
 - Download: `GET /api/photo/:filename` with `Authorization: Bearer <token>` → the JPEG bytes
+- Delete: `DELETE /api/photo/:filename` with `Authorization: Bearer <token>` → removes the R2 object and the matching `rtu_pictures` map row
 - Pull progress: `GET /api/audit-state?since=<ISO>` → `{ rows, more, syncedAt }`
 - Push progress: `POST /api/audit-state` `{ changes: [...], deviceId }` → `{ rows, accepted, syncedAt }`
 
@@ -48,10 +49,11 @@ The flow is upload-then-publish, fetch-on-demand:
    time someone actually looks at that RTU, then caches the blob in IndexedDB. Nothing is
    pre-fetched — a technician on cellular does not pay for photos nobody opened.
 
-Deleting a photo clears the slot everywhere, because the published key becomes `null` and
-newest-wins carries that to the other devices. **The R2 object itself is left in place**;
-the bucket is the audit record of what was shot, and downstream consumers may already have
-read it. A retake reuses the same key and overwrites it.
+Deleting a photo calls `DELETE /api/photo/:filename`, which removes the R2 object and the
+matching `rtu_pictures` map row, then clears the slot in audit state so every device drops
+it. Sign-in is required for a published photo — otherwise the app would clear locally and
+leave the bucket lying. A retake reuses the same key and overwrites it if the slot is
+filled again.
 
 Schema lives in `supabase/migrations/` (`20260727000000_rtu_audit_state.sql`, then
 `20260727010000_rtu_audit_photo_files.sql`).
@@ -104,6 +106,7 @@ retain capture EXIF (GPS, `DateTimeOriginal`, `Software`).
 | CORS | Allowlist only: `https://rtu-qr-tracker.quadreal-rpiwin.workers.dev` and `https://quadreal-r.github.io` (desktop browsers), `capacitor://localhost` (iOS shell), `https://localhost` (Android shell, per `androidScheme: 'https'`), plus the legacy shells' `https://appassets.androidplatform.net` and `rtuapp://app`. Desktop origins are easy to forget because every surface loads the same `index.html` and differs only in where it is served from — leave one out and sign-in fails at the preflight, before the password is checked, which looks exactly like a wrong password. Note `quadreal-r.github.io` is shared by every Pages site on that account. Responses include `Vary: Origin` (no `*`). Live reload (`npm run dev:ios`) serves from a LAN address that is deliberately **not** allowlisted — sign-in and upload only work in a normal build. |
 | Uploads | Requires `Content-Length` ≤ 12 MB. MIME from magic bytes (`FF D8 FF` / PNG signature) only — `415` otherwise. Keys are flat at the bucket root and must match the audit-photo pattern — `400` otherwise. Re-uploading the same RTU photo **overwrites in place** by design, so the pattern check is what stops a caller reaching objects outside that shape. |
 | Downloads | Requires a valid bearer token — the bucket stays private and no public URL is ever handed out. The requested name is stripped of any path and must match the audit-photo pattern, so a caller cannot read arbitrary objects out of a bucket shared with QR East Industrial. Unknown key → `404`. |
+| Deletes | Same auth and filename allowlist as downloads. Removes the R2 object and best-effort-deletes the matching `rtu_pictures` row so the Industrial map badge drops. Already-missing keys still return `ok: true`. Rate-limited with the upload limiter. |
 | Audit sync | Requires a valid bearer token. Missing Supabase config → `503` (never a silent success that reports "synced" while nothing was stored). Supabase errors are reported as `502` with our own text, never PostgREST's, which can echo SQL. The service key never appears in a response. |
 | Methods | Wrong method on known routes → `405`. |
 | Headers | Every response: `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`. |
