@@ -8,7 +8,10 @@
   "workers_dev": true,
   "vars": {
     // Bump to revoke all outstanding session tokens immediately.
-    "TOKEN_EPOCH": "1"
+    "TOKEN_EPOCH": "1",
+    // QR-East_Industrial_Database. Public project URL, not a credential — the service
+    // key that goes with it is a secret (`wrangler secret put SUPABASE_SERVICE_KEY`).
+    "SUPABASE_URL": "https://wyiymdtlncperqpwriuk.supabase.co"
   },
   "r2_buckets": [
     {
@@ -26,6 +29,13 @@
       "name": "UPLOAD_LIMITER",
       "namespace_id": "1002",
       "simple": { "limit": 60, "period": 60 }
+    },
+    {
+      // Sync is chattier than upload: a device pushes after each edit and polls on
+      // reconnect, so one leaked token still cannot hammer Supabase.
+      "name": "SYNC_LIMITER",
+      "namespace_id": "1003",
+      "simple": { "limit": 120, "period": 60 }
     }
   ],
   "observability": {

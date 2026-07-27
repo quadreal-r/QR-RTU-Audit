@@ -1,12 +1,37 @@
 # rtu-pictures-api
 
-Cloudflare Worker that authenticates field staff and uploads RTU audit photos to R2 bucket **`rtu-pictures`**.
+Cloudflare Worker that authenticates field staff, uploads RTU audit photos to R2 bucket
+**`rtu-pictures`**, and syncs shared audit progress into Supabase.
 
 - Cloudflare account: **quadreal.rpiwin@gmail.com** (`ed62b8514615e386084ffd47455ec775`), pinned as `account_id` in `wrangler.jsonc`
 - URL: https://rtu-pictures-api.quadreal-rpiwin.workers.dev
 - Login: `POST /api/login` `{ "password": "..." }` → `{ token, expiresInHours }` (8h TTL)
 - Session check: `GET /api/me` with `Authorization: Bearer <token>`
 - Upload: `PUT /api/upload/:filename` with `Authorization: Bearer <token>` and raw JPEG/PNG body (max 12 MB)
+- Pull progress: `GET /api/audit-state?since=<ISO>` → `{ rows, more, syncedAt }`
+- Push progress: `POST /api/audit-state` `{ changes: [...], deviceId }` → `{ rows, accepted, syncedAt }`
+
+## Shared audit progress
+
+Field devices are offline-first: every edit lands in `localStorage` first and syncs later.
+This Worker is the only thing that holds Supabase credentials — a phone never talks to
+PostgREST, so the anon key is nowhere in the app and `public.rtu_audit_state` has no write
+policy at all.
+
+Conflicts resolve **newest edit wins**, decided in Postgres by
+`public.rtu_audit_state_sync(jsonb)` rather than in the client, so two devices that were
+both offline converge on the same answer. A client timestamp in the future is clamped to
+`now()` so a phone with a bad clock cannot pin a row permanently. Rows the caller lost the
+race on come back at their stored value, letting the device correct itself in the same
+round trip.
+
+Each change is rebuilt from an allowlist (`buildingSlug`, `rtuKey`, `started`, `complete`,
+`photosDone`, `note`, `updatedAt`) before it reaches Postgres: unknown keys are dropped,
+slugs and RTU keys must match a conservative pattern, and notes are capped at 4,000 chars.
+Batches are capped at 500 changes and 1 MB. Photos are **not** synced — the JPEGs stay on
+the device that took them and reach R2 through the upload route.
+
+Schema lives in `supabase/migrations/20260727000000_rtu_audit_state.sql`.
 
 ## Object keys and metadata (for downstream consumers)
 
@@ -45,10 +70,11 @@ retain capture EXIF (GPS, `DateTimeOriginal`, `Software`).
 
 | Control | Detail |
 | --- | --- |
-| Rate limits | Login: 8 req / 60s per `CF-Connecting-IP`. Upload: 60 req / 60s per SHA-256 of bearer token. Exceeded → `429` + `Retry-After: 60`. |
+| Rate limits | Login: 8 req / 60s per `CF-Connecting-IP`. Upload: 60 req / 60s per SHA-256 of bearer token. Audit sync: 120 req / 60s per SHA-256 of bearer token. Exceeded → `429` + `Retry-After: 60`. |
 | Auth | Constant-time password compare. `AUTH_SECRET` is **required** (no fallback to `AUTH_PASSWORD`). Tokens include `iat`, `jti`, and `TOKEN_EPOCH`; bumping the epoch revokes all sessions. TTL: **8 hours**. |
 | CORS | Allowlist only: `capacitor://localhost` (iOS shell), `https://localhost` (Android shell, per `androidScheme: 'https'`), plus the legacy shells' `https://appassets.androidplatform.net` and `rtuapp://app`. Responses include `Vary: Origin` (no `*`). Live reload (`npm run dev:ios`) serves from a LAN address that is deliberately **not** allowlisted — sign-in and upload only work in a normal build. |
 | Uploads | Requires `Content-Length` ≤ 12 MB. MIME from magic bytes (`FF D8 FF` / PNG signature) only — `415` otherwise. Keys are flat at the bucket root and must match the audit-photo pattern — `400` otherwise. Re-uploading the same RTU photo **overwrites in place** by design, so the pattern check is what stops a caller reaching objects outside that shape. |
+| Audit sync | Requires a valid bearer token. Missing Supabase config → `503` (never a silent success that reports "synced" while nothing was stored). Supabase errors are reported as `502` with our own text, never PostgREST's, which can echo SQL. The service key never appears in a response. |
 | Methods | Wrong method on known routes → `405`. |
 | Headers | Every response: `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`. |
 
@@ -76,6 +102,8 @@ npm run dry-run
 | `AUTH_PASSWORD` | Worker secret | Shared sign-in password (Settings → Sign in) |
 | `AUTH_SECRET` | Worker secret | HMAC signing key for session tokens (**required**; login fails closed with 500 if missing) |
 | `TOKEN_EPOCH` | `vars` in `wrangler.jsonc` | Integer/string epoch embedded in tokens. **Increment and redeploy** to revoke every outstanding token |
+| `SUPABASE_URL` | `vars` in `wrangler.jsonc` | Project URL for QR-East_Industrial_Database. Public, not a credential |
+| `SUPABASE_SERVICE_KEY` | Worker secret | Reads/writes `public.rtu_audit_state`, bypassing RLS. Audit sync fails closed with `503` if missing. Use a named secret key (`sb_secret_…`) from **Settings → API Keys** rather than the legacy `service_role` JWT, so it can be revoked independently |
 
 Generate a strong `AUTH_SECRET` (e.g. `openssl rand -hex 32`) distinct from `AUTH_PASSWORD`.
 
@@ -85,6 +113,7 @@ Defined in `wrangler.jsonc`:
 
 - `LOGIN_LIMITER` — namespace `1001`, 8 / 60s
 - `UPLOAD_LIMITER` — namespace `1002`, 60 / 60s
+- `SYNC_LIMITER` — namespace `1003`, 120 / 60s
 
 Limits are per Cloudflare location and eventually consistent (abuse control, not accounting).
 

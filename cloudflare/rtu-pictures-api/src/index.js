@@ -1,9 +1,17 @@
 /**
- * RTU Pictures API — auth + upload to R2 bucket `rtu-pictures`
+ * RTU Pictures API — auth + upload to R2 bucket `rtu-pictures`,
+ * plus shared audit progress in Supabase (`public.rtu_audit_state`).
  */
 
 const TOKEN_TTL_HOURS = 8;
 const MAX_UPLOAD_BYTES = 12 * 1024 * 1024; // 12 MB
+
+// Audit-state sync limits. A full portfolio is ~1100 RTUs, so a device that has been
+// offline for a week still catches up in two pages.
+const SYNC_PAGE_SIZE = 1000;
+const SYNC_MAX_CHANGES = 500;
+const SYNC_MAX_BODY_BYTES = 1 * 1024 * 1024; // 1 MB
+const NOTE_MAX = 4000;
 const ALLOWED_ORIGINS = new Set([
   // Capacitor shells: iOS uses the default `capacitor` scheme, Android follows
   // `androidScheme: 'https'` from capacitor.config.ts.
@@ -265,6 +273,143 @@ async function readUploadBody(request, maxBytes) {
   return { body: new Uint8Array(buf) };
 }
 
+function supabaseReady(env) {
+  return (
+    typeof env.SUPABASE_URL === "string" &&
+    env.SUPABASE_URL.startsWith("https://") &&
+    typeof env.SUPABASE_SERVICE_KEY === "string" &&
+    env.SUPABASE_SERVICE_KEY.length > 0
+  );
+}
+
+/**
+ * The service key bypasses RLS, so it never leaves the Worker and never appears in a
+ * response. Callers get our own error text rather than PostgREST's, which can echo SQL.
+ */
+async function supabaseCall(env, path, init = {}) {
+  const base = env.SUPABASE_URL.replace(/\/+$/, "");
+  const res = await fetch(`${base}/rest/v1/${path}`, {
+    ...init,
+    headers: {
+      apikey: env.SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      ...(init.headers || {}),
+    },
+  });
+  if (!res.ok) return { error: res.status };
+  try {
+    return { data: await res.json() };
+  } catch {
+    return { error: 502 };
+  }
+}
+
+const BUILDING_SLUG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
+const RTU_KEY = /^[A-Za-z0-9][A-Za-z0-9 ._()/-]{0,63}$/;
+
+/**
+ * Rebuild each change from an allowlist rather than passing the client object through,
+ * so unknown keys cannot reach Postgres and a bad row cannot abort the whole batch.
+ */
+function cleanChange(raw, deviceId) {
+  if (!raw || typeof raw !== "object") return null;
+  const buildingSlug = String(raw.buildingSlug ?? "").trim();
+  const rtuKey = String(raw.rtuKey ?? "").trim();
+  if (!BUILDING_SLUG.test(buildingSlug) || !RTU_KEY.test(rtuKey)) return null;
+  const updatedAt = new Date(raw.updatedAt);
+  if (Number.isNaN(updatedAt.getTime())) return null;
+  return {
+    building_slug: buildingSlug,
+    rtu_key: rtuKey,
+    started: raw.started === true,
+    complete: raw.complete === true,
+    photos_done: raw.photosDone === true,
+    note: String(raw.note ?? "").slice(0, NOTE_MAX),
+    updated_at: updatedAt.toISOString(),
+    updated_by: deviceId || null,
+  };
+}
+
+function toClientRow(row) {
+  return {
+    buildingSlug: row.building_slug,
+    rtuKey: row.rtu_key,
+    s: row.started === true,
+    c: row.complete === true,
+    ph: row.photos_done === true,
+    n: row.note || "",
+    u: row.updated_at,
+    by: row.updated_by || "",
+  };
+}
+
+const AUDIT_COLUMNS =
+  "building_slug,rtu_key,started,complete,photos_done,note,updated_at,updated_by";
+
+async function handleAuditPull(request, env, url) {
+  const since = url.searchParams.get("since") || "";
+  let filter = "";
+  if (since) {
+    const at = new Date(since);
+    if (Number.isNaN(at.getTime())) {
+      return json(request, { ok: false, error: "Invalid since timestamp" }, 400);
+    }
+    filter = `&updated_at=gt.${encodeURIComponent(at.toISOString())}`;
+  }
+  const { data, error } = await supabaseCall(
+    env,
+    `rtu_audit_state?select=${AUDIT_COLUMNS}&order=updated_at.asc&limit=${SYNC_PAGE_SIZE}${filter}`
+  );
+  if (error) return json(request, { ok: false, error: "Sync unavailable" }, 502);
+  const rows = Array.isArray(data) ? data.map(toClientRow) : [];
+  return json(request, {
+    ok: true,
+    rows,
+    // The client re-requests from the last row when a page fills up.
+    more: rows.length === SYNC_PAGE_SIZE,
+    syncedAt: new Date().toISOString(),
+  });
+}
+
+async function handleAuditPush(request, env) {
+  const declared = Number(request.headers.get("Content-Length") || "0");
+  if (declared > SYNC_MAX_BODY_BYTES) {
+    return json(request, { ok: false, error: "Payload too large" }, 413);
+  }
+  let body = {};
+  try {
+    body = await request.json();
+  } catch {
+    return json(request, { ok: false, error: "Invalid JSON" }, 400);
+  }
+  if (!Array.isArray(body.changes)) {
+    return json(request, { ok: false, error: "changes must be an array" }, 400);
+  }
+  if (body.changes.length > SYNC_MAX_CHANGES) {
+    return json(request, { ok: false, error: "Too many changes in one request" }, 413);
+  }
+
+  const deviceId = safeMetaValue(body.deviceId, 64) || null;
+  const changes = body.changes.map((c) => cleanChange(c, deviceId)).filter(Boolean);
+  if (!changes.length) {
+    return json(request, { ok: true, rows: [], accepted: 0, syncedAt: new Date().toISOString() });
+  }
+
+  const { data, error } = await supabaseCall(env, "rpc/rtu_audit_state_sync", {
+    method: "POST",
+    body: JSON.stringify({ changes }),
+  });
+  if (error) return json(request, { ok: false, error: "Sync unavailable" }, 502);
+  return json(request, {
+    ok: true,
+    rows: Array.isArray(data) ? data.map(toClientRow) : [],
+    accepted: changes.length,
+    syncedAt: new Date().toISOString(),
+  });
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
@@ -395,6 +540,38 @@ export default {
         },
       });
       return json(request, { ok: true, key: objectKey });
+    }
+
+    if (path === "/api/audit-state") {
+      if (request.method !== "GET" && request.method !== "POST") {
+        return json(request, { ok: false, error: "Method not allowed" }, 405, {
+          Allow: "GET, POST, OPTIONS",
+        });
+      }
+      if (!requireAuthSecret(env)) {
+        return json(request, { ok: false, error: "Server misconfigured" }, 500);
+      }
+      const token = bearer(request);
+      if (!(await verifyToken(env, token))) {
+        return json(request, { ok: false, error: "Sign in required" }, 401);
+      }
+      // Fail closed: without Supabase credentials the app stays offline-only rather
+      // than silently reporting a successful sync that went nowhere.
+      if (!supabaseReady(env)) {
+        return json(request, { ok: false, error: "Sync not configured" }, 503);
+      }
+
+      const limited = await rateLimitOr429(
+        request,
+        env.SYNC_LIMITER,
+        `sync:${await sha256Hex(token)}`,
+        60
+      );
+      if (limited) return limited;
+
+      return request.method === "GET"
+        ? handleAuditPull(request, env, url)
+        : handleAuditPush(request, env);
     }
 
     // Unmatched method under /api/* → 405; unknown paths → 404

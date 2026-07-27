@@ -29,6 +29,7 @@ Out of scope for this app: payment card data, end-customer PII databases, multi-
 | Building addresses, manager names, RTU UIDs | Embedded `DATA` in `index.html`; localStorage keys | Confidential business | Not secret, but not public marketing data |
 | Technician free-text notes | `localStorage` (`qr_rtu_v3:*`); optional JSON backup files | Confidential | May name people, defects, access issues — escape on render |
 | Audit photos + GPS EXIF | IndexedDB locally; R2 after upload | **Sensitive** | GPS pins rooftop work; treat as the sensitive core |
+| Shared audit progress (sticker, photo count, notes) | `public.rtu_audit_state` in Supabase, via the Worker | Confidential | Same sensitivity as the local notes it mirrors; devices never reach Postgres directly |
 | Session Bearer token | `sessionStorage` (`rtu_cf_session_token`) | Credential | Short-lived; clear on 401; revoke fleet-wide via `TOKEN_EPOCH` |
 | `AUTH_PASSWORD` / `AUTH_SECRET` / `TOKEN_EPOCH` | Cloudflare Worker secrets only | **Secret** | Never in git, never in client |
 
@@ -41,6 +42,7 @@ There is no customer PII store and no payment data in this product.
 | `AUTH_PASSWORD` | Shared staff login for `POST /api/login` | `wrangler secret put AUTH_PASSWORD` | **Every 90 days**, and whenever a technician leaves or a device is lost with a remembered password |
 | `AUTH_SECRET` | HMAC key for minting/verifying Bearer tokens | `wrangler secret put AUTH_SECRET` | **Every 90 days**, or immediately if token forgery is suspected (pair with `TOKEN_EPOCH` bump) |
 | `TOKEN_EPOCH` | Epoch embedded in token payload; mismatch → reject | `wrangler secret put TOKEN_EPOCH` (or Worker var if configured as such) | Bump anytime to **revoke all outstanding tokens** without waiting for TTL |
+| `SUPABASE_SERVICE_KEY` | Lets the Worker read and write `public.rtu_audit_state`; bypasses RLS | `wrangler secret put SUPABASE_SERVICE_KEY` | **Every 90 days.** Prefer a named secret key (`sb_secret_…`) over the legacy `service_role` JWT so it can be revoked on its own in Settings → API Keys |
 | Android signing keystore + `keystore.properties` | Release APK signing | Local only; gitignored | Protect offline; do not commit |
 | Apple provisioning / certificates | iOS distribution | Local / Apple Developer; gitignored `*.mobileprovision` | Per Apple lifecycle |
 
@@ -51,6 +53,7 @@ cd cloudflare/rtu-pictures-api
 npx wrangler secret put AUTH_PASSWORD
 npx wrangler secret put AUTH_SECRET
 npx wrangler secret put TOKEN_EPOCH
+npx wrangler secret put SUPABASE_SERVICE_KEY
 ```
 
 Use a new random high-entropy value for `AUTH_SECRET` and a monotonically increasing integer (or timestamp) for `TOKEN_EPOCH`.

@@ -323,6 +323,14 @@
         <p style="margin:0;font-size:12px;color:var(--muted);line-height:1.45">Stay signed in while this app is open. Closing the app signs you out.</p>
       </div>
       <div class="sec">
+        <h3>Shared database</h3>
+        <div class="status" id="syncStatus">Sign in to sync</div>
+        <div class="rowbtns">
+          <button type="button" class="btn" id="setSyncNow">Sync now</button>
+        </div>
+        <p style="margin:0;font-size:12px;color:var(--muted);line-height:1.45">Stickers, notes and photo progress sync to the QR East database, so every device sees the same audit. Photos themselves stay on the device that took them. Edits made offline sync when you reconnect.</p>
+      </div>
+      <div class="sec">
         <h3>Database</h3>
         <div class="rowbtns">
           <button type="button" class="btn pri" id="setExportDb">Export database</button>
@@ -368,8 +376,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.48';
-const BUILD=59;
+const APP_VER='v1.1.49';
+const BUILD=60;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function cfGetToken(){try{return sessionStorage.getItem(CF_SESSION_KEY)||'';}catch(_){return '';}}
@@ -1164,7 +1172,7 @@ function wireRtu(){
     const b=p.buildings[bi], r=b.rtus[ri], id=b.id, k=r.k;
     row.querySelectorAll('.chk[data-k]').forEach(btn=>btn.onclick=()=>{
       const kk=btn.dataset.k;const m=rec(id,k);const o=m.r[k];
-      o[kk]=!o[kk];persist(id);refreshRow(id,k,row,bi,b);
+      o[kk]=!o[kk];touch(id,k);persist(id);refreshRow(id,k,row,bi,b);
     });
     const file=row.querySelector('.phfile');
     const addBtn=row.querySelector('.ph-add');
@@ -1201,12 +1209,12 @@ function wireRtu(){
         ensurePhotoSlots(o);
         if(wasLegacy) o.p=[false,false,false,false];
         o.p[slot]=true;syncPhotoFlag(o);
-        persist(id);refreshRow(id,k,row,bi,b);toast(title);
+        touch(id,k);persist(id);refreshRow(id,k,row,bi,b);toast(title);
       }catch(err){console.error(err);alert('Could not save that photo. Try again.');}
       pendingShot=null;
     };
     const ta=row.querySelector('.note');grow(ta);
-    ta.oninput=()=>{const m=rec(id,k);m.r[k].n=ta.value;persist(id);grow(ta);};
+    ta.oninput=()=>{const m=rec(id,k);m.r[k].n=ta.value;touch(id,k);persist(id);grow(ta);};
     paintPhotoThumbs(row,id,k,stateOf(id,k)||{});
   });
 }
@@ -1238,7 +1246,7 @@ async function clearPhotoSlot(id,k,slot,row,bi,b,opts){
   else{o.p[slot]=false;syncPhotoFlag(o);}
   // Drop any leftover custom metadata
   if(o.files&&typeof o.files==='object') delete o.files[slot];
-  persist(id);
+  touch(id,k);persist(id);
   if(row) refreshRow(id,k,row,bi,b);
   toast('Photo deleted from device');
   return true;
@@ -1403,8 +1411,9 @@ function restore(e){
       const d=sanitizeBackupData(parsed.data);
       if(!Object.keys(d).length){alert('No valid building progress found in that backup.');return;}
       if(!confirm('Restore this backup? It will merge saved progress into your workspace.'))return;
-      Object.keys(d).forEach(id=>{mem[id]=d[id];persist(id);});
+      Object.keys(d).forEach(id=>{mem[id]=d[id];touchBuilding(id);persist(id);});
       flushAll();render();window.scrollTo(0,0);toast('Backup restored');
+      syncNow();
     }catch(err){alert('That file could not be read as a QuadReal backup.');}
   };
   rd.readAsText(f);e.target.value='';
@@ -1412,12 +1421,211 @@ function restore(e){
 
 function render(){view.level==='props'?renderProps():renderBuildings();}
 
+/* ---------------- shared audit state ----------------
+   Every device still works offline first: an edit lands in localStorage immediately and
+   the rooftop never waits on a network. This queue mirrors those edits to the
+   rtu-pictures-api Worker, the only place holding Supabase credentials. The server
+   decides conflicts by newest edit, so two phones that were both offline converge
+   instead of one silently clobbering the other. */
+const SYNC_DEVICE_KEY='rtu_sync_device_v1';
+// Deliberately outside PREFIX: loadAll() treats every PREFIX key as a building record.
+const SYNC_CURSOR_KEY='rtu_sync_cursor_v1';
+const SYNC_DEBOUNCE_MS=1500;
+const SYNC_POLL_MS=60000;
+const SYNC_MAX_BATCH=500;
+const SEP='\u0000';
+const syncQueue=new Set();
+let syncBusy=false,syncRerun=false,syncTimer=null,syncPoll=null,syncLastAt=0,syncFailed=false,syncKnown=null;
+
+function syncDeviceId(){
+  try{
+    let v=localStorage.getItem(SYNC_DEVICE_KEY);
+    if(!v){v=Math.random().toString(36).slice(2,10);localStorage.setItem(SYNC_DEVICE_KEY,v);}
+    return v;
+  }catch(_){return 'device';}
+}
+function syncCursor(){try{return localStorage.getItem(SYNC_CURSOR_KEY)||'';}catch(_){return '';}}
+function setSyncCursor(v){try{if(v)localStorage.setItem(SYNC_CURSOR_KEY,v);}catch(_){}}
+
+/** Rows for RTUs this build does not know about are ignored rather than stored. */
+function knownRtu(id,k){
+  if(!syncKnown){
+    syncKnown=new Set();
+    DATA.forEach(p=>p.buildings.forEach(b=>b.rtus.forEach(r=>syncKnown.add(b.id+SEP+r.k))));
+  }
+  return syncKnown.has(id+SEP+k);
+}
+
+/** Stamp an edit so the server can tell which device wrote last, then queue it. */
+function touch(id,k){
+  const m=rec(id,k);
+  m.r[k].u=Date.now();
+  syncQueue.add(id+SEP+k);
+  clearTimeout(syncTimer);
+  syncTimer=setTimeout(()=>syncNow(),SYNC_DEBOUNCE_MS);
+}
+function touchBuilding(id){
+  const m=mem[id];
+  if(!m||!m.r) return;
+  Object.keys(m.r).forEach(k=>{m.r[k].u=Date.now();syncQueue.add(id+SEP+k);});
+}
+
+/**
+ * Progress recorded before this build has no timestamp, so a first pull would treat it as
+ * older than anything on the server and quietly overwrite it. Queue whatever this device
+ * already has, once, so it lands in the shared table instead of being lost.
+ */
+const SYNC_SEEDED_KEY='rtu_sync_seeded_v1';
+function seedInitialSync(){
+  try{if(localStorage.getItem(SYNC_SEEDED_KEY))return;}catch(_){return;}
+  const now=Date.now();
+  Object.keys(mem).forEach(id=>{
+    const r=mem[id]&&mem[id].r;
+    if(!r) return;
+    Object.keys(r).forEach(k=>{
+      const o=r[k];
+      if(!o||!knownRtu(id,k)) return;
+      const hasWork=o.s||o.c||o.ph||(Array.isArray(o.p)&&o.p.some(Boolean))||(o.n&&o.n.trim());
+      if(!hasWork) return;
+      if(!o.u) o.u=now;
+      syncQueue.add(id+SEP+k);
+    });
+  });
+  try{localStorage.setItem(SYNC_SEEDED_KEY,'1');}catch(_){}
+}
+
+function pendingChanges(){
+  const out=[];
+  syncQueue.forEach(key=>{
+    if(out.length>=SYNC_MAX_BATCH) return;
+    const i=key.indexOf(SEP);
+    const id=key.slice(0,i),k=key.slice(i+1);
+    const o=stateOf(id,k);
+    if(!o) return;
+    out.push({
+      buildingSlug:id,
+      rtuKey:k,
+      started:!!o.s,
+      complete:!!o.c,
+      photosDone:photosDone(o),
+      note:String(o.n||''),
+      updatedAt:new Date(o.u||Date.now()).toISOString()
+    });
+  });
+  return out;
+}
+
+function applyRemoteRows(rows){
+  const hit=new Set();
+  (rows||[]).forEach(row=>{
+    const id=row&&row.buildingSlug,k=row&&row.rtuKey;
+    if(!id||!k||!knownRtu(id,k)) return;
+    const remoteU=Date.parse(row.u)||0;
+    const local=stateOf(id,k);
+    if(local&&(local.u||0)>=remoteU) return; // our copy is newer and still queued to push
+    const o=rec(id,k).r[k];
+    o.s=!!row.s;o.c=!!row.c;o.n=String(row.n||'');
+    // Photo files live on the device that took them. Trust our own slots when we have
+    // any, otherwise take the other device's word that the photos exist.
+    if(Array.isArray(o.p)&&o.p.some(Boolean)) syncPhotoFlag(o); else o.ph=!!row.ph;
+    o.u=remoteU;
+    hit.add(id);
+  });
+  // Write through instead of persist(): a first sync can carry a thousand rows and
+  // persist() raises a toast for each one.
+  hit.forEach(id=>{try{_set(PREFIX+id,JSON.stringify(mem[id]||{}));}catch(_){}});
+  return hit.size>0;
+}
+
+async function syncFetch(path,init){
+  const token=cfGetToken();
+  if(!token) return null;
+  const opts=init||{};
+  const res=await fetch(CF_API+path,{
+    method:opts.method||'GET',
+    body:opts.body,
+    headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'}
+  });
+  if(cfClearSessionOnUnauthorized(res)) return null;
+  if(!res.ok) throw new Error('sync '+res.status);
+  return res.json();
+}
+
+async function syncNow(){
+  if(!canSave||!cfSignedIn()||navigator.onLine===false) {refreshSyncStatus();return;}
+  if(syncBusy){syncRerun=true;return;}
+  syncBusy=true;refreshSyncStatus();
+  let changed=false;
+  try{
+    const changes=pendingChanges();
+    if(changes.length){
+      const pushed=await syncFetch('/api/audit-state',{method:'POST',body:JSON.stringify({changes,deviceId:syncDeviceId()})});
+      if(!pushed) return;
+      changes.forEach(c=>syncQueue.delete(c.buildingSlug+SEP+c.rtuKey));
+      changed=applyRemoteRows(pushed.rows)||changed;
+    }
+    let cursor=syncCursor(),guard=0;
+    while(guard++<12){
+      const page=await syncFetch('/api/audit-state?since='+encodeURIComponent(cursor));
+      if(!page) return;
+      changed=applyRemoteRows(page.rows)||changed;
+      if(page.rows&&page.rows.length) cursor=page.rows[page.rows.length-1].u;
+      else if(!cursor) cursor=page.syncedAt;
+      setSyncCursor(cursor);
+      if(!page.more) break;
+    }
+    syncLastAt=Date.now();syncFailed=false;
+    // A backlog bigger than one batch keeps going rather than waiting for the next edit.
+    if(syncQueue.size) syncRerun=true;
+  }catch(err){
+    syncFailed=true;
+  }finally{
+    syncBusy=false;
+    if(changed){try{render();}catch(_){}}
+    refreshSyncStatus();
+    if(syncRerun){syncRerun=false;setTimeout(()=>syncNow(),400);}
+  }
+}
+
+function syncAgoLabel(ts){
+  const s=Math.max(0,Math.round((Date.now()-ts)/1000));
+  if(s<60) return 'just now';
+  const m=Math.round(s/60);
+  return m<60?(m+' min ago'):(Math.round(m/60)+' h ago');
+}
+function refreshSyncStatus(){
+  const el=document.getElementById('syncStatus');
+  if(!el) return;
+  const waiting=syncQueue.size;
+  let text='',ok=false;
+  if(!cfSignedIn()) text='Sign in to sync';
+  else if(navigator.onLine===false) text=waiting?('Offline — '+waiting+' change'+(waiting===1?'':'s')+' waiting'):'Offline';
+  else if(syncBusy) text='Syncing…';
+  else if(syncFailed) text='Last sync failed — will retry';
+  else if(syncLastAt){text='Synced '+syncAgoLabel(syncLastAt);ok=true;}
+  else text='Not synced yet';
+  el.textContent=text;
+  el.classList.toggle('on',ok);
+}
+
+function startSync(){
+  seedInitialSync();
+  window.addEventListener('online',()=>syncNow());
+  window.addEventListener('offline',()=>refreshSyncStatus());
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')syncNow();});
+  clearInterval(syncPoll);
+  // Poll so a technician sees the other crew's work without touching anything.
+  syncPoll=setInterval(()=>{if(document.visibilityState==='visible')syncNow();},SYNC_POLL_MS);
+  syncNow();
+}
+
 /* ---------------- settings / Cloudflare ---------------- */
 function openSettings(){
   const m=document.getElementById('settingsModal');
   if(!m) return;
   refreshCfStatus();
   refreshScreenTimeoutUI();
+  refreshSyncStatus();
   m.hidden=false;
 }
 function closeSettings(){
@@ -1452,11 +1660,13 @@ async function cfSignIn(){
     if(input) input.value='';
     refreshCfStatus();
     toast('Signed in');
+    syncNow();
   }catch(err){alert('Could not reach Cloudflare. Check your connection.');}
 }
 function cfSignOut(){
   cfSetToken('');
   refreshCfStatus();
+  refreshSyncStatus();
   toast('Signed out');
 }
 async function uploadAllPictures(){
@@ -1523,12 +1733,15 @@ function wireSettingsOnce(){
   const imp=document.getElementById('setImportDb'); const file=document.getElementById('setImportFile');
   if(imp&&file){imp.onclick=()=>file.click(); file.onchange=restore;}
   const up=document.getElementById('setUploadPics'); if(up) up.onclick=()=>uploadAllPictures();
+  const sy=document.getElementById('setSyncNow');
+  if(sy) sy.onclick=()=>{if(!cfSignedIn()){alert('Sign in first.');return;}syncNow();};
   document.querySelectorAll('#screenTimeoutOpts .opt').forEach(btn=>{
     btn.onclick=()=>setScreenTimeoutMins(parseInt(btn.dataset.mins,10)||0);
   });
   refreshCfStatus();
   refreshScreenTimeoutUI();
+  refreshSyncStatus();
 }
 
-(async function(){await loadAll();wireSettingsOnce();render();refreshCfStatus();applyScreenTimeout(getScreenTimeoutMins(),false);})();
+(async function(){await loadAll();wireSettingsOnce();render();refreshCfStatus();applyScreenTimeout(getScreenTimeoutMins(),false);startSync();})();
 </script>
