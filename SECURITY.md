@@ -28,8 +28,9 @@ Out of scope for this app: payment card data, end-customer PII databases, multi-
 | --- | --- | --- | --- |
 | Building addresses, manager names, RTU UIDs | Embedded `DATA` in `index.html`; localStorage keys | Confidential business | Not secret, but not public marketing data |
 | Technician free-text notes | `localStorage` (`qr_rtu_v3:*`); optional JSON backup files | Confidential | May name people, defects, access issues — escape on render |
-| Audit photos + GPS EXIF | IndexedDB locally; R2 after upload | **Sensitive** | GPS pins rooftop work; treat as the sensitive core |
+| Audit photos + GPS EXIF | IndexedDB locally; R2 after upload | **Sensitive** | GPS pins rooftop work; treat as the sensitive core. A photo now spreads to every signed-in device that opens that RTU, so each one holds a cached copy |
 | Shared audit progress (sticker, photo count, notes) | `public.rtu_audit_state` in Supabase, via the Worker | Confidential | Same sensitivity as the local notes it mirrors; devices never reach Postgres directly |
+| Photo object keys | `rtu_audit_state.photo_files` | Confidential | Names only, never image bytes. Each is re-validated against the audit-photo pattern in the Worker so sync cannot address other objects in the shared bucket |
 | Session Bearer token | `sessionStorage` (`rtu_cf_session_token`) | Credential | Short-lived; clear on 401; revoke fleet-wide via `TOKEN_EPOCH` |
 | `AUTH_PASSWORD` / `AUTH_SECRET` / `TOKEN_EPOCH` | Cloudflare Worker secrets only | **Secret** | Never in git, never in client |
 

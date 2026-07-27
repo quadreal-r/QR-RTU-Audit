@@ -313,6 +313,19 @@ const RTU_KEY = /^[A-Za-z0-9][A-Za-z0-9 ._()/-]{0,63}$/;
  * Rebuild each change from an allowlist rather than passing the client object through,
  * so unknown keys cannot reach Postgres and a bad row cannot abort the whole batch.
  */
+/**
+ * Photo slots carry R2 object keys another device will fetch, so each name is held to the
+ * same audit-photo shape the upload route enforces. A name that fails is dropped to null
+ * rather than stored, so nobody can use sync to point a device at an arbitrary object.
+ */
+function cleanPhotoFiles(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 4).map((entry) => {
+    const name = safeKey(entry);
+    return entry && isAuditPhotoName(name) ? name : null;
+  });
+}
+
 function cleanChange(raw, deviceId) {
   if (!raw || typeof raw !== "object") return null;
   const buildingSlug = String(raw.buildingSlug ?? "").trim();
@@ -329,6 +342,7 @@ function cleanChange(raw, deviceId) {
     note: String(raw.note ?? "").slice(0, NOTE_MAX),
     updated_at: updatedAt.toISOString(),
     updated_by: deviceId || null,
+    photo_files: cleanPhotoFiles(raw.photoFiles),
   };
 }
 
@@ -342,11 +356,12 @@ function toClientRow(row) {
     n: row.note || "",
     u: row.updated_at,
     by: row.updated_by || "",
+    f: Array.isArray(row.photo_files) ? row.photo_files : [],
   };
 }
 
 const AUDIT_COLUMNS =
-  "building_slug,rtu_key,started,complete,photos_done,note,updated_at,updated_by";
+  "building_slug,rtu_key,started,complete,photos_done,note,updated_at,updated_by,photo_files";
 
 async function handleAuditPull(request, env, url) {
   const since = url.searchParams.get("since") || "";
@@ -540,6 +555,55 @@ export default {
         },
       });
       return json(request, { ok: true, key: objectKey });
+    }
+
+    // Photos are taken on one device and viewed on another, so a signed-in device can
+    // stream an object back out of R2. Same name allowlist as upload: the key comes from
+    // the client, and the bucket is shared with QR East Industrial.
+    if (path.startsWith("/api/photo/")) {
+      if (request.method !== "GET") {
+        return json(request, { ok: false, error: "Method not allowed" }, 405, {
+          Allow: "GET, OPTIONS",
+        });
+      }
+      if (!requireAuthSecret(env)) {
+        return json(request, { ok: false, error: "Server misconfigured" }, 500);
+      }
+      const token = bearer(request);
+      if (!(await verifyToken(env, token))) {
+        return json(request, { ok: false, error: "Sign in required" }, 401);
+      }
+
+      const limited = await rateLimitOr429(
+        request,
+        env.DOWNLOAD_LIMITER,
+        `download:${await sha256Hex(token)}`,
+        60
+      );
+      if (limited) return limited;
+
+      let name;
+      try {
+        name = decodeURIComponent(path.slice("/api/photo/".length));
+      } catch {
+        return json(request, { ok: false, error: "Invalid filename encoding" }, 400);
+      }
+      const key = safeKey(name);
+      if (!isAuditPhotoName(key)) {
+        return json(request, { ok: false, error: "Not an audit photo name" }, 400);
+      }
+
+      const object = await env.PICTURES.get(key);
+      if (!object) return json(request, { ok: false, error: "Not found" }, 404);
+
+      return new Response(object.body, {
+        status: 200,
+        headers: {
+          "Content-Type": object.httpMetadata?.contentType || "image/jpeg",
+          "Content-Length": String(object.size),
+          ...corsHeaders(request),
+        },
+      });
     }
 
     if (path === "/api/audit-state") {

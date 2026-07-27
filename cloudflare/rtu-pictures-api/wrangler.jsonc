@@ -36,6 +36,13 @@
       "name": "SYNC_LIMITER",
       "namespace_id": "1003",
       "simple": { "limit": 120, "period": 60 }
+    },
+    {
+      // Opening a building can request every photo on the page at once — roughly
+      // 30 RTUs x 4 slots — so this ceiling sits well above one screenful.
+      "name": "DOWNLOAD_LIMITER",
+      "namespace_id": "1004",
+      "simple": { "limit": 300, "period": 60 }
     }
   ],
   "observability": {

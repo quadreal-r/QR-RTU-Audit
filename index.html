@@ -376,8 +376,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.49';
-const BUILD=60;
+const APP_VER='v1.1.50';
+const BUILD=61;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function cfGetToken(){try{return sessionStorage.getItem(CF_SESSION_KEY)||'';}catch(_){return '';}}
@@ -1209,7 +1209,9 @@ function wireRtu(){
         ensurePhotoSlots(o);
         if(wasLegacy) o.p=[false,false,false,false];
         o.p[slot]=true;syncPhotoFlag(o);
+        ensurePhotoFiles(o);
         touch(id,k);persist(id);refreshRow(id,k,row,bi,b);toast(title);
+        queuePhotoUpload(id,k,slot,photoFileName(b,r,slot));
       }catch(err){console.error(err);alert('Could not save that photo. Try again.');}
       pendingShot=null;
     };
@@ -1232,9 +1234,9 @@ async function clearPhotoSlot(id,k,slot,row,bi,b,opts){
   const m=rec(id,k);const o=m.r[k];
   const wasLegacy=!!(o.ph && (!Array.isArray(o.p) || !o.p.some(Boolean)));
   if(!wasLegacy && !(Array.isArray(o.p) && o.p[slot])) return false;
-  if(!opts.skipConfirm && !confirm('Delete photo '+(slot+1)+' of '+PHOTO_MAX+'?\n\nThis permanently erases it from this device.')) return false;
+  if(!opts.skipConfirm && !confirm('Delete photo '+(slot+1)+' of '+PHOTO_MAX+'?\n\nThe slot is cleared on every device. Any copy already uploaded stays in the Cloudflare bucket.')) return false;
   const rObj=(b.rtus||[]).find(x=>x.k===k)||{k:k,name:k};
-  const fname=photoFileName(b,rObj,slot);
+  const fname=(Array.isArray(o.f)&&o.f[slot])||photoFileName(b,rObj,slot);
   // Revoke any live preview URL for this slot
   try{
     const el=row&&row.querySelector('.ang.has[data-slot="'+slot+'"]');
@@ -1242,13 +1244,15 @@ async function clearPhotoSlot(id,k,slot,row,bi,b,opts){
   }catch(_){}
   await eraseDevicePhoto(id,k,slot,fname);
   ensurePhotoSlots(o);
-  if(wasLegacy){o.p=[false,false,false,false];o.ph=false;}
-  else{o.p[slot]=false;syncPhotoFlag(o);}
+  ensurePhotoFiles(o);
+  dequeuePhotoUpload(id,k,slot);
+  if(wasLegacy){o.p=[false,false,false,false];o.ph=false;o.f=[null,null,null,null];}
+  else{o.p[slot]=false;o.f[slot]=null;syncPhotoFlag(o);}
   // Drop any leftover custom metadata
   if(o.files&&typeof o.files==='object') delete o.files[slot];
   touch(id,k);persist(id);
   if(row) refreshRow(id,k,row,bi,b);
-  toast('Photo deleted from device');
+  toast('Photo deleted');
   return true;
 }
 async function paintPhotoThumbs(row,id,k,o){
@@ -1286,7 +1290,9 @@ async function paintPhotoThumbs(row,id,k,o){
     const i=+el.dataset.slot;
     if(legacy) continue;
     try{
-      const blob=await photoGet(photoSlotKey(id,k,i));
+      let blob=await photoGet(photoSlotKey(id,k,i));
+      // Shot on another device: pull it now that someone is actually looking at it.
+      if(!blob) blob=await fetchRemotePhoto(id,k,i,b,r,o);
       if(!blob) continue;
       if(el.dataset.blobUrl){try{URL.revokeObjectURL(el.dataset.blobUrl);}catch(_){}}
       const url=URL.createObjectURL(blob);
@@ -1294,7 +1300,8 @@ async function paintPhotoThumbs(row,id,k,o){
       el.href=url;
       el.target='_blank';
       el.rel='noopener';
-      const fname=photoFileName(b, r, i);
+      // Prefer the published key: it carries the year the photo was actually taken.
+      const fname=(Array.isArray(o.f)&&o.f[i])||photoFileName(b, r, i);
       el.setAttribute('download', fname);
       el.title=fname.replace(/\.jpg$/i,'');
       el.setAttribute('aria-label', fname.replace(/\.jpg$/i,''));
@@ -1509,7 +1516,8 @@ function pendingChanges(){
       complete:!!o.c,
       photosDone:photosDone(o),
       note:String(o.n||''),
-      updatedAt:new Date(o.u||Date.now()).toISOString()
+      updatedAt:new Date(o.u||Date.now()).toISOString(),
+      photoFiles:Array.isArray(o.f)?o.f.slice(0,PHOTO_MAX).map(n=>n||null):[]
     });
   });
   return out;
@@ -1517,6 +1525,13 @@ function pendingChanges(){
 
 function applyRemoteRows(rows){
   const hit=new Set();
+  // Read the upload queue once: a first sync can carry a thousand rows.
+  const pendingAll=new Map();
+  loadUploadQueue().forEach(j=>{
+    const key=j.id+SEP+j.k;
+    if(!pendingAll.has(key)) pendingAll.set(key,new Set());
+    pendingAll.get(key).add(j.slot);
+  });
   (rows||[]).forEach(row=>{
     const id=row&&row.buildingSlug,k=row&&row.rtuKey;
     if(!id||!k||!knownRtu(id,k)) return;
@@ -1525,9 +1540,24 @@ function applyRemoteRows(rows){
     if(local&&(local.u||0)>=remoteU) return; // our copy is newer and still queued to push
     const o=rec(id,k).r[k];
     o.s=!!row.s;o.c=!!row.c;o.n=String(row.n||'');
-    // Photo files live on the device that took them. Trust our own slots when we have
-    // any, otherwise take the other device's word that the photos exist.
-    if(Array.isArray(o.p)&&o.p.some(Boolean)) syncPhotoFlag(o); else o.ph=!!row.ph;
+    const rf=Array.isArray(row.f)?row.f:[];
+    if(rf.length){
+      // The row names every slot, so a null really means "deleted", not "unknown".
+      // Rows written before photo keys existed send an empty array and are skipped here.
+      ensurePhotoSlots(o);ensurePhotoFiles(o);
+      const pending=pendingAll.get(id+SEP+k);
+      for(let i=0;i<PHOTO_MAX;i++){
+        if(pending&&pending.has(i)) continue; // our own shot has not been published yet
+        const name=rf[i]||null;
+        o.f[i]=name;
+        o.p[i]=!!name;
+      }
+      syncPhotoFlag(o);
+    }else if(Array.isArray(o.p)&&o.p.some(Boolean)){
+      syncPhotoFlag(o);
+    }else{
+      o.ph=!!row.ph;
+    }
     o.u=remoteU;
     hit.add(id);
   });
@@ -1604,19 +1634,123 @@ function refreshSyncStatus(){
   else if(syncFailed) text='Last sync failed — will retry';
   else if(syncLastAt){text='Synced '+syncAgoLabel(syncLastAt);ok=true;}
   else text='Not synced yet';
+  const photos=loadUploadQueue().length;
+  if(photos) text+=' · '+photos+' photo'+(photos===1?'':'s')+' uploading';
   el.textContent=text;
   el.classList.toggle('on',ok);
 }
 
+/* ---------------- photo transfer ----------------
+   Photos are too big to put in the shared table, so only their object keys travel. The
+   device that shot a photo uploads it to R2 in the background; any other device fetches
+   it the first time someone looks at that RTU and keeps a local copy. A key is published
+   only after the upload lands, so a second device never chases a file that isn't there. */
+const UPLOAD_QUEUE_KEY='rtu_photo_upload_queue_v1';
+const PHOTO_MISS_COOLDOWN_MS=60000;
+let uploadBusy=false;
+const photoMiss=new Map();
+const photoInflight=new Map();
+
+function ensurePhotoFiles(o){
+  if(!Array.isArray(o.f)) o.f=[null,null,null,null];
+  while(o.f.length<PHOTO_MAX) o.f.push(null);
+  if(o.f.length>PHOTO_MAX) o.f=o.f.slice(0,PHOTO_MAX);
+  return o.f;
+}
+function loadUploadQueue(){
+  try{const raw=localStorage.getItem(UPLOAD_QUEUE_KEY);const arr=raw?JSON.parse(raw):[];return Array.isArray(arr)?arr:[];}catch(_){return [];}
+}
+function saveUploadQueue(q){try{localStorage.setItem(UPLOAD_QUEUE_KEY,JSON.stringify(q.slice(0,600)));}catch(_){}}
+function queuePhotoUpload(id,k,slot,name){
+  const q=loadUploadQueue();
+  if(!q.some(j=>j.id===id&&j.k===k&&j.slot===slot)) q.push({id:id,k:k,slot:slot,name:name});
+  saveUploadQueue(q);
+  processUploadQueue();
+}
+function dequeuePhotoUpload(id,k,slot){
+  saveUploadQueue(loadUploadQueue().filter(j=>!(j.id===id&&j.k===k&&j.slot===slot)));
+}
+async function processUploadQueue(){
+  if(uploadBusy||!canSave||!cfSignedIn()||navigator.onLine===false) return;
+  let q=loadUploadQueue();
+  if(!q.length) return;
+  uploadBusy=true;
+  let sent=0;
+  try{
+    while(q.length){
+      const job=q[0];
+      let blob=null;
+      try{blob=await photoGet(photoSlotKey(job.id,job.k,job.slot));}catch(_){}
+      if(!blob){q.shift();saveUploadQueue(q);continue;} // deleted locally before it went up
+      let res;
+      try{
+        res=await fetch(CF_API+'/api/upload/'+encodeURIComponent(job.name),{
+          method:'PUT',
+          headers:{
+            'Authorization':'Bearer '+cfGetToken(),
+            'Content-Type':blob.type||'image/jpeg',
+            'X-Filename':job.name,
+            'X-Building-Id':String(job.id),
+            'X-Rtu-Key':String(job.k),
+            'X-Photo-Slot':String(job.slot+1),
+            'X-Audit-Year':String(new Date().getFullYear())
+          },
+          body:blob
+        });
+      }catch(_){break;} // lost signal mid-drain: keep the queue and retry later
+      if(cfClearSessionOnUnauthorized(res)) break;
+      if(!res.ok) break;
+      const o=stateOf(job.id,job.k);
+      if(o){ensurePhotoFiles(o);o.f[job.slot]=job.name;touch(job.id,job.k);persist(job.id);}
+      sent++;
+      q.shift();saveUploadQueue(q);
+    }
+  }finally{
+    uploadBusy=false;
+    if(sent) syncNow();
+    refreshSyncStatus();
+  }
+}
+
+/** Pull a photo this device never took, then keep it so the trip happens once. */
+function fetchRemotePhoto(id,k,slot,b,r,o){
+  if(!cfSignedIn()||navigator.onLine===false) return Promise.resolve(null);
+  const name=(o&&Array.isArray(o.f)&&o.f[slot])||'';
+  if(!name) return Promise.resolve(null);
+  const key=photoSlotKey(id,k,slot);
+  const missedAt=photoMiss.get(key)||0;
+  if(Date.now()-missedAt<PHOTO_MISS_COOLDOWN_MS) return Promise.resolve(null);
+  if(photoInflight.has(key)) return photoInflight.get(key);
+  const job=(async()=>{
+    try{
+      const res=await fetch(CF_API+'/api/photo/'+encodeURIComponent(name),{headers:{'Authorization':'Bearer '+cfGetToken()}});
+      if(cfClearSessionOnUnauthorized(res)) return null;
+      if(!res.ok){if(res.status===404)photoMiss.set(key,Date.now());return null;}
+      const blob=await res.blob();
+      if(!blob||!blob.size) return null;
+      try{await photoPut(key,blob);}catch(_){}
+      photoMiss.delete(key);
+      return blob;
+    }catch(_){return null;}
+    finally{photoInflight.delete(key);}
+  })();
+  photoInflight.set(key,job);
+  return job;
+}
+
+function syncTick(){
+  syncNow();
+  processUploadQueue();
+}
 function startSync(){
   seedInitialSync();
-  window.addEventListener('online',()=>syncNow());
+  window.addEventListener('online',syncTick);
   window.addEventListener('offline',()=>refreshSyncStatus());
-  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')syncNow();});
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')syncTick();});
   clearInterval(syncPoll);
   // Poll so a technician sees the other crew's work without touching anything.
-  syncPoll=setInterval(()=>{if(document.visibilityState==='visible')syncNow();},SYNC_POLL_MS);
-  syncNow();
+  syncPoll=setInterval(()=>{if(document.visibilityState==='visible')syncTick();},SYNC_POLL_MS);
+  syncTick();
 }
 
 /* ---------------- settings / Cloudflare ---------------- */
@@ -1660,7 +1794,7 @@ async function cfSignIn(){
     if(input) input.value='';
     refreshCfStatus();
     toast('Signed in');
-    syncNow();
+    syncTick();
   }catch(err){alert('Could not reach Cloudflare. Check your connection.');}
 }
 function cfSignOut(){
@@ -1711,9 +1845,13 @@ async function uploadAllPictures(){
         break;
       }
       if(!res.ok){fail++;continue;}
+      // Publishing the key is what lets other devices open this photo.
+      const o=stateOf(job.b.id,job.r.k);
+      if(o){ensurePhotoFiles(o);o.f[job.slot]=job.name;touch(job.b.id,job.r.k);persist(job.b.id);}
       ok++;
     }catch(_){fail++;}
   }
+  if(ok) syncNow();
   if(prog) prog.textContent='Done — '+ok+' uploaded'+(fail?', '+fail+' failed':'')+'.';
   toast(ok+' picture'+(ok===1?'':'s')+' uploaded');
 }
@@ -1734,7 +1872,7 @@ function wireSettingsOnce(){
   if(imp&&file){imp.onclick=()=>file.click(); file.onchange=restore;}
   const up=document.getElementById('setUploadPics'); if(up) up.onclick=()=>uploadAllPictures();
   const sy=document.getElementById('setSyncNow');
-  if(sy) sy.onclick=()=>{if(!cfSignedIn()){alert('Sign in first.');return;}syncNow();};
+  if(sy) sy.onclick=()=>{if(!cfSignedIn()){alert('Sign in first.');return;}syncTick();};
   document.querySelectorAll('#screenTimeoutOpts .opt').forEach(btn=>{
     btn.onclick=()=>setScreenTimeoutMins(parseInt(btn.dataset.mins,10)||0);
   });

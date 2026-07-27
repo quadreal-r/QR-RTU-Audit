@@ -8,6 +8,7 @@ Cloudflare Worker that authenticates field staff, uploads RTU audit photos to R2
 - Login: `POST /api/login` `{ "password": "..." }` → `{ token, expiresInHours }` (8h TTL)
 - Session check: `GET /api/me` with `Authorization: Bearer <token>`
 - Upload: `PUT /api/upload/:filename` with `Authorization: Bearer <token>` and raw JPEG/PNG body (max 12 MB)
+- Download: `GET /api/photo/:filename` with `Authorization: Bearer <token>` → the JPEG bytes
 - Pull progress: `GET /api/audit-state?since=<ISO>` → `{ rows, more, syncedAt }`
 - Push progress: `POST /api/audit-state` `{ changes: [...], deviceId }` → `{ rows, accepted, syncedAt }`
 
@@ -26,12 +27,34 @@ race on come back at their stored value, letting the device correct itself in th
 round trip.
 
 Each change is rebuilt from an allowlist (`buildingSlug`, `rtuKey`, `started`, `complete`,
-`photosDone`, `note`, `updatedAt`) before it reaches Postgres: unknown keys are dropped,
-slugs and RTU keys must match a conservative pattern, and notes are capped at 4,000 chars.
-Batches are capped at 500 changes and 1 MB. Photos are **not** synced — the JPEGs stay on
-the device that took them and reach R2 through the upload route.
+`photosDone`, `note`, `updatedAt`, `photoFiles`) before it reaches Postgres: unknown keys
+are dropped, slugs and RTU keys must match a conservative pattern, and notes are capped at
+4,000 chars. Batches are capped at 500 changes and 1 MB.
 
-Schema lives in `supabase/migrations/20260727000000_rtu_audit_state.sql`.
+## Photos across devices
+
+The JPEGs never go through Supabase. What travels is `photoFiles`: up to four R2 object
+keys, one per photo slot, `null` where the slot is empty. Each name is held to the same
+audit-photo pattern the upload route enforces, so sync cannot be used to point a device at
+an arbitrary object in a bucket shared with QR East Industrial.
+
+The flow is upload-then-publish, fetch-on-demand:
+
+1. The device that takes a photo queues it and uploads to `PUT /api/upload/:filename` in
+   the background, retrying until it lands.
+2. Only on success does it record the key and push it through sync. A key in the table
+   therefore means the object really exists, so no other device chases a missing file.
+3. Another device shows the slot as filled and calls `GET /api/photo/:filename` the first
+   time someone actually looks at that RTU, then caches the blob in IndexedDB. Nothing is
+   pre-fetched — a technician on cellular does not pay for photos nobody opened.
+
+Deleting a photo clears the slot everywhere, because the published key becomes `null` and
+newest-wins carries that to the other devices. **The R2 object itself is left in place**;
+the bucket is the audit record of what was shot, and downstream consumers may already have
+read it. A retake reuses the same key and overwrites it.
+
+Schema lives in `supabase/migrations/` (`20260727000000_rtu_audit_state.sql`, then
+`20260727010000_rtu_audit_photo_files.sql`).
 
 ## Object keys and metadata (for downstream consumers)
 
@@ -70,10 +93,11 @@ retain capture EXIF (GPS, `DateTimeOriginal`, `Software`).
 
 | Control | Detail |
 | --- | --- |
-| Rate limits | Login: 8 req / 60s per `CF-Connecting-IP`. Upload: 60 req / 60s per SHA-256 of bearer token. Audit sync: 120 req / 60s per SHA-256 of bearer token. Exceeded → `429` + `Retry-After: 60`. |
+| Rate limits | Login: 8 req / 60s per `CF-Connecting-IP`. Upload: 60 req / 60s per SHA-256 of bearer token. Audit sync: 120 req / 60s per SHA-256 of bearer token. Download: 300 req / 60s per SHA-256 of bearer token, since opening one building can request a screenful of photos at once. Exceeded → `429` + `Retry-After: 60`. |
 | Auth | Constant-time password compare. `AUTH_SECRET` is **required** (no fallback to `AUTH_PASSWORD`). Tokens include `iat`, `jti`, and `TOKEN_EPOCH`; bumping the epoch revokes all sessions. TTL: **8 hours**. |
 | CORS | Allowlist only: `capacitor://localhost` (iOS shell), `https://localhost` (Android shell, per `androidScheme: 'https'`), plus the legacy shells' `https://appassets.androidplatform.net` and `rtuapp://app`. Responses include `Vary: Origin` (no `*`). Live reload (`npm run dev:ios`) serves from a LAN address that is deliberately **not** allowlisted — sign-in and upload only work in a normal build. |
 | Uploads | Requires `Content-Length` ≤ 12 MB. MIME from magic bytes (`FF D8 FF` / PNG signature) only — `415` otherwise. Keys are flat at the bucket root and must match the audit-photo pattern — `400` otherwise. Re-uploading the same RTU photo **overwrites in place** by design, so the pattern check is what stops a caller reaching objects outside that shape. |
+| Downloads | Requires a valid bearer token — the bucket stays private and no public URL is ever handed out. The requested name is stripped of any path and must match the audit-photo pattern, so a caller cannot read arbitrary objects out of a bucket shared with QR East Industrial. Unknown key → `404`. |
 | Audit sync | Requires a valid bearer token. Missing Supabase config → `503` (never a silent success that reports "synced" while nothing was stored). Supabase errors are reported as `502` with our own text, never PostgREST's, which can echo SQL. The service key never appears in a response. |
 | Methods | Wrong method on known routes → `405`. |
 | Headers | Every response: `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`. |
@@ -114,6 +138,7 @@ Defined in `wrangler.jsonc`:
 - `LOGIN_LIMITER` — namespace `1001`, 8 / 60s
 - `UPLOAD_LIMITER` — namespace `1002`, 60 / 60s
 - `SYNC_LIMITER` — namespace `1003`, 120 / 60s
+- `DOWNLOAD_LIMITER` — namespace `1004`, 300 / 60s
 
 Limits are per Cloudflare location and eventually consistent (abuse control, not accounting).
 
