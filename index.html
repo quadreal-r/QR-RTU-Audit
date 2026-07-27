@@ -376,14 +376,6 @@
         <p style="margin:0;font-size:12px;color:var(--muted);line-height:1.45">Stickers, notes and photo progress sync to the QR East database, so every device sees the same audit. Photos themselves stay on the device that took them. Edits made offline sync when you reconnect.</p>
       </div>
       <div class="sec">
-        <h3>Database</h3>
-        <div class="rowbtns">
-          <button type="button" class="btn pri" id="setExportDb">Export database</button>
-          <button type="button" class="btn" id="setImportDb">Import database</button>
-        </div>
-        <input id="setImportFile" type="file" accept="application/json,.json" hidden>
-      </div>
-      <div class="sec">
         <h3>New audit</h3>
         <p style="margin:0;font-size:12px;color:var(--muted);line-height:1.45">Clears stickers, notes and photo progress on this device and in the shared database so every building starts blank. Cloudflare picture files stay in the bucket.</p>
         <div class="pwwrap">
@@ -438,8 +430,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.78';
-const BUILD=89;
+const APP_VER='v1.1.79';
+const BUILD=90;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function isNativeShell(){
@@ -1155,12 +1147,9 @@ function controlsHTML(){
 function dataCardHTML(){
   return `<div class="datacard">
     <div class="dt">${canSave?`<span class="live"><span class="pulse"></span>${CLAUDE?'Auto-saving to your account':'Auto-saving on this device'}</span>`:`<span class="live off"><span class="pulse off"></span>Not saving — storage is blocked</span>`}</div>
-    <p>${!canSave?"Your browser is blocking storage — this is usually Private/Incognito mode on iPhone. Turn off Private Browsing and reopen the site, then your taps will save. ":(CLAUDE?"Every tap and note saves instantly to your QuadReal workspace on your account — close the tab, sign out, or switch devices and it stays put. ":"Every tap and note saves instantly onto this device and stays after you close the app, even offline. ")}Progress is tied to each unit by name, so it stays correct even if the building list changes. Back up to a file for safety, and Restore to move to another phone.</p>
+    <p>${!canSave?"Your browser is blocking storage — this is usually Private/Incognito mode on iPhone. Turn off Private Browsing and reopen the site, then your taps will save. ":(CLAUDE?"Every tap and note saves instantly to your QuadReal workspace on your account — close the tab, sign out, or switch devices and it stays put. ":"Every tap and note saves instantly onto this device and stays after you close the app, even offline. ")}Progress is tied to each unit by name, so it stays correct even if the building list changes. Signed-in devices sync stickers, notes and photo progress automatically.</p>
     <div class="dbtns">
       <button class="btn pri" id="exp"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>Export CSV</button>
-      <button class="btn" id="bak"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v13"/><path d="M7 11l5 5 5-5"/><path d="M5 21h14"/></svg>Back up</button>
-      <button class="btn" id="res"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V8"/><path d="M7 13l5-5 5 5"/><path d="M5 3h14"/></svg>Restore</button>
-      <input id="resfile" type="file" accept="application/json,.json" style="display:none">
     </div>
   </div>`;
 }
@@ -1388,9 +1377,6 @@ function wireControls(inBuilding){
 }
 function wireData(){
   const exp=document.getElementById('exp');if(exp)exp.onclick=exportCSV;
-  const bak=document.getElementById('bak');if(bak)bak.onclick=backup;
-  const res=document.getElementById('res');const rf=document.getElementById('resfile');
-  if(res&&rf){res.onclick=()=>rf.click();rf.onchange=restore;}
 }
 let pendingShot=null, viewerCtx=null;
 function closePhotoViewer(){
@@ -1728,7 +1714,7 @@ function refreshRow(id,k,row,bi,b){
 let toastT;
 function toast(msg){const t=document.getElementById('toast');if(msg)t.querySelector('span').textContent=msg;t.classList.add('show');clearTimeout(toastT);toastT=setTimeout(()=>{t.classList.remove('show');t.querySelector('span').textContent='Saved';},1300);}
 
-/* ---------------- export / backup / restore ---------------- */
+/* ---------------- export CSV ---------------- */
 function download(name,text,type){
   const blob=new Blob([text],{type});const url=URL.createObjectURL(blob);
   const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();
@@ -1742,68 +1728,6 @@ function exportCSV(){
   })));
   const csv=rows.map(r=>r.map(c=>{c=(c==null?'':''+c);return /[",\n]/.test(c)?'"'+c.replace(/"/g,'""')+'"':c;}).join(',')).join('\n');
   download('QuadReal_RTU_progress.csv',csv,'text/csv');
-}
-function backup(){
-  const payload={app:'QuadReal RTU QR Program',version:3,exportedAt:new Date().toISOString(),data:mem};
-  download('QuadReal_RTU_backup_'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(payload),'application/json');
-  toast('Backup downloaded');
-}
-const BACKUP_MAX_BYTES=2*1024*1024;
-const NOTE_MAX_LEN=4000;
-const KNOWN_BUILDING_IDS=(()=>{const s=new Set();DATA.forEach(p=>p.buildings.forEach(b=>s.add(b.id)));return s;})();
-function sanitizeBackupRtu(o){
-  if(!o||typeof o!=='object'||Array.isArray(o)) return null;
-  const clean={};
-  if('s' in o) clean.s=!!o.s;
-  if('c' in o) clean.c=!!o.c;
-  if('ph' in o) clean.ph=!!o.ph;
-  if('n' in o) clean.n=String(o.n==null?'':o.n).slice(0,NOTE_MAX_LEN);
-  if('p' in o){
-    if(!Array.isArray(o.p)) return null;
-    clean.p=o.p.slice(0,PHOTO_MAX).map(v=>!!v);
-  }
-  return clean;
-}
-function sanitizeBackupData(raw){
-  if(!raw||typeof raw!=='object'||Array.isArray(raw)) throw new Error('Invalid backup data');
-  const out={};
-  for(const id of Object.keys(raw)){
-    if(!KNOWN_BUILDING_IDS.has(id)) continue;
-    const entry=raw[id];
-    if(!entry||typeof entry!=='object'||Array.isArray(entry)) continue;
-    const r=entry.r;
-    if(!r||typeof r!=='object'||Array.isArray(r)) continue;
-    const cleanR={};
-    for(const rk of Object.keys(r)){
-      if(typeof rk!=='string'||!rk||rk.length>64) continue;
-      const clean=sanitizeBackupRtu(r[rk]);
-      if(clean) cleanR[rk]=clean;
-    }
-    out[id]={r:cleanR};
-  }
-  return out;
-}
-function restore(e){
-  const f=e.target.files&&e.target.files[0];if(!f)return;
-  if(f.size>BACKUP_MAX_BYTES){alert('That backup is too large to restore.');e.target.value='';return;}
-  const rd=new FileReader();
-  rd.onload=()=>{
-    try{
-      const parsed=JSON.parse(rd.result);
-      if(!parsed||typeof parsed!=='object'||Array.isArray(parsed)) throw new Error('shape');
-      if(typeof parsed.app!=='string'||parsed.version==null||!parsed.data||typeof parsed.data!=='object'||Array.isArray(parsed.data))
-        throw new Error('shape');
-      const ver=parsed.version;
-      if(!(ver===3||ver==='3')) throw new Error('version');
-      const d=sanitizeBackupData(parsed.data);
-      if(!Object.keys(d).length){alert('No valid building progress found in that backup.');return;}
-      if(!confirm('Restore this backup? It will merge saved progress into your workspace.'))return;
-      Object.keys(d).forEach(id=>{mem[id]=d[id];touchBuilding(id);persist(id);});
-      flushAll();render();window.scrollTo(0,0);toast('Backup restored');
-      syncNow();
-    }catch(err){alert('That file could not be read as a QuadReal backup.');}
-  };
-  rd.readAsText(f);e.target.value='';
 }
 
 function render(){view.level==='props'?renderProps():renderBuildings();}
@@ -2547,9 +2471,6 @@ function wireSettingsOnce(){
   const pw=document.getElementById('cfPassword'); if(pw) pw.addEventListener('keydown',e=>{if(e.key==='Enter') cfSignIn();});
   const pwt=document.getElementById('cfPwToggle');
   if(pwt&&pw) pwt.onclick=()=>setPasswordVisible(pw.type==='password');
-  const exp=document.getElementById('setExportDb'); if(exp) exp.onclick=()=>{backup(); toast('Database exported');};
-  const imp=document.getElementById('setImportDb'); const file=document.getElementById('setImportFile');
-  if(imp&&file){imp.onclick=()=>file.click(); file.onchange=restore;}
   const resetBtn=document.getElementById('setResetAudit'); if(resetBtn) resetBtn.onclick=()=>startNewAudit();
   const resetPw=document.getElementById('resetPassword');
   const resetPwToggle=document.getElementById('resetPwToggle');
