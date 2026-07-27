@@ -13,10 +13,13 @@ const SYNC_MAX_CHANGES = 500;
 const SYNC_MAX_BODY_BYTES = 1 * 1024 * 1024; // 1 MB
 const NOTE_MAX = 4000;
 const ALLOWED_ORIGINS = new Set([
-  // The tracker served to desktop browsers by the rtu-qr-tracker Worker. Same first-party
-  // app as the shells, just a different origin, and without this every desktop sign-in is
-  // blocked by the browser before the password is even checked.
+  // Desktop browsers. Same first-party app as the shells, just served from elsewhere:
+  // leave an origin out and sign-in dies at the preflight, before the password is even
+  // checked, which reads to a technician as a rejected password.
   "https://rtu-qr-tracker.quadreal-rpiwin.workers.dev",
+  // GitHub Pages copy (quadreal-r/QR-RTU-Audit). Note this origin is shared by every
+  // Pages site on that account, so anything published there can reach this API.
+  "https://quadreal-r.github.io",
   // Capacitor shells: iOS uses the default `capacitor` scheme, Android follows
   // `androidScheme: 'https'` from capacitor.config.ts.
   "capacitor://localhost",
