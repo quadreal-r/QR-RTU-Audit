@@ -28,6 +28,7 @@
     --good:#1F9D6B;
     --good-soft:#E7F5EE;
     --amber:#C98A16;
+    --bad:#CE3B34;
     --radius:18px;
     --tap:46px;
     --pad-x:16px;
@@ -67,7 +68,8 @@
   .settings-btn{width:40px;height:40px;border-radius:11px;border:1.5px solid var(--line-2);background:#fff;color:var(--qr-midnight);display:grid;place-items:center;cursor:pointer;padding:0}
   .settings-btn:hover{border-color:var(--blue-line);color:var(--qr-blue)}
   .settings-btn:focus-visible{outline:2.5px solid var(--qr-blue);outline-offset:2px}
-  .settings-btn .dot{position:absolute;width:8px;height:8px;border-radius:50%;background:var(--good);transform:translate(10px,-10px)}
+  .settings-btn .dot{position:absolute;width:8px;height:8px;border-radius:50%;background:var(--good);transform:translate(10px,-10px);box-shadow:0 0 0 2px #fff}
+  .settings-btn .dot.off{background:var(--bad)}
   .settings-backdrop{position:fixed;inset:0;z-index:80;background:rgba(8,12,24,.45);display:flex;align-items:flex-start;justify-content:flex-end;padding:max(12px,env(safe-area-inset-top,0px)) max(12px,env(safe-area-inset-right,0px)) max(12px,env(safe-area-inset-bottom,0px)) max(12px,env(safe-area-inset-left,0px));-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
   .settings-backdrop[hidden]{display:none!important}
   .settings-panel{width:min(380px,100%);max-height:calc(100dvh - 24px - env(safe-area-inset-top,0px));margin-top:8px;background:#fff;border:1.5px solid var(--line);border-radius:16px;box-shadow:0 18px 40px -20px rgba(23,48,115,.55);overflow:auto;-webkit-overflow-scrolling:touch}
@@ -376,8 +378,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.52';
-const BUILD=63;
+const APP_VER='v1.1.53';
+const BUILD=64;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function cfGetToken(){try{return sessionStorage.getItem(CF_SESSION_KEY)||'';}catch(_){return '';}}
@@ -1777,8 +1779,12 @@ function refreshCfStatus(){
   if(signed) signed.hidden=!on;
   if(btn){
     let dot=btn.querySelector('.dot');
-    if(on && !dot){dot=document.createElement('span');dot.className='dot';btn.style.position='relative';btn.appendChild(dot);}
-    if(!on && dot) dot.remove();
+    if(!dot){dot=document.createElement('span');dot.className='dot';btn.style.position='relative';btn.appendChild(dot);}
+    dot.classList.toggle('off',!on);
+    // Red is easy to miss on a bright roof, so the state is in the label too.
+    const label=on?'Settings — signed in':'Settings — signed out';
+    btn.setAttribute('aria-label',label);
+    btn.title=label;
   }
 }
 async function cfSignIn(){
