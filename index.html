@@ -91,20 +91,6 @@
   .pwshow{position:absolute;right:5px;top:50%;transform:translateY(-50%);height:36px;min-width:58px;padding:0 10px;border:0;border-radius:9px;background:transparent;color:var(--qr-blue);font:inherit;font-size:13px;font-weight:800;cursor:pointer}
   .pwshow:hover{background:var(--blue-soft)}
   .pwshow:focus-visible{outline:2.5px solid var(--qr-blue);outline-offset:2px}
-  .installbar{position:fixed;z-index:70;left:max(10px,env(safe-area-inset-left,0px));right:max(10px,env(safe-area-inset-right,0px));bottom:calc(10px + env(safe-area-inset-bottom,0px));display:flex;align-items:center;gap:11px;padding:10px 12px;background:#fff;border:1.5px solid var(--line-2);border-radius:15px;box-shadow:0 16px 34px -18px rgba(23,48,115,.6)}
-  .installbar[hidden]{display:none!important}
-  .ib-icon{width:38px;height:38px;border-radius:9px;flex:0 0 auto;border:1px solid var(--line)}
-  .ib-text{min-width:0;flex:1 1 auto;display:flex;flex-direction:column;line-height:1.3}
-  .ib-text strong{font-size:14px;color:var(--qr-midnight)}
-  .ib-text span{font-size:12px;color:var(--muted)}
-  .ib-go{flex:0 0 auto}
-  .ib-x{flex:0 0 auto;width:30px;height:30px;border:0;background:transparent;color:var(--faint);font-size:22px;line-height:1;cursor:pointer;border-radius:8px}
-  .ib-x:hover{background:var(--canvas);color:var(--ink)}
-  @media (max-width:430px){
-    .installbar{flex-wrap:wrap}
-    .ib-text{flex:1 1 100%;order:2}
-    .ib-go{order:3;flex:1 1 auto}
-  }
   .install-howto{position:fixed;inset:0;z-index:90;background:rgba(8,12,24,.45);display:flex;align-items:flex-end;justify-content:center;padding:max(12px,env(safe-area-inset-top,0px)) max(12px,env(safe-area-inset-right,0px)) max(12px,env(safe-area-inset-bottom,0px)) max(12px,env(safe-area-inset-left,0px))}
   .install-howto[hidden]{display:none!important}
   .install-howto-panel{width:min(400px,100%);background:#fff;border:1.5px solid var(--line);border-radius:16px;box-shadow:0 18px 40px -20px rgba(23,48,115,.55);overflow:hidden}
@@ -337,16 +323,6 @@
   </div>
 </header>
 
-<div class="installbar" id="installBar" hidden>
-  <img class="ib-icon" id="installBarIcon" src="icons/icon-192.png" alt="">
-  <div class="ib-text">
-    <strong>Add to Home Screen</strong>
-    <span id="installBarHint">Creates a shortcut to this page.</span>
-  </div>
-  <button type="button" class="btn pri ib-go" id="installBarGo">Add</button>
-  <button type="button" class="ib-x" id="installBarNo" aria-label="Not now">&times;</button>
-</div>
-
 <div class="install-howto" id="installHowto" hidden>
   <div class="install-howto-panel" role="dialog" aria-modal="true" aria-labelledby="installHowtoTitle">
     <header>
@@ -413,6 +389,11 @@
         <div class="status" id="screenTimeoutStatus">Using device default</div>
         <p style="margin:0;font-size:12px;color:var(--muted);line-height:1.45">Keeps the screen awake while you work on rooftops. Resets when the timer ends or you choose Default.</p>
       </div>
+      <div class="sec" id="installSec" hidden>
+        <h3>Home screen</h3>
+        <button type="button" class="btn pri" id="setAddHome">Add To Home Screen</button>
+        <p style="margin:0;font-size:12px;color:var(--muted);line-height:1.45" id="installHint">Creates a shortcut to this page on your phone. Opens like an app from the Home Screen.</p>
+      </div>
       <div class="sec">
         <h3>Pictures</h3>
         <button type="button" class="btn pri" id="setUploadPics">Upload all pictures to Cloudflare</button>
@@ -441,8 +422,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.66';
-const BUILD=77;
+const APP_VER='v1.1.68';
+const BUILD=79;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function isNativeShell(){
@@ -1962,6 +1943,7 @@ function openSettings(){
   refreshCfStatus();
   refreshScreenTimeoutUI();
   refreshSyncStatus();
+  refreshInstallUI();
   // Never reopen the panel with a password still on screen.
   setPasswordVisible(false);
   m.hidden=false;
@@ -1993,10 +1975,11 @@ function refreshCfStatus(){
   }
 }
 /* ---------------- add to home screen ----------------
-   Chrome/Edge can open a real install prompt. Safari (and most other mobile browsers)
-   have no API for it, so the Add button shows short platform steps instead. Either path
-   only creates a Home Screen shortcut to this page — not a store app. */
-const INSTALL_DISMISS_KEY='rtu_install_dismissed';
+   Offered from Settings (not a floating bar). Chrome/Edge can open a real install
+   prompt; Safari and most other mobile browsers have no API, so the button shows
+   short platform steps instead. Either path only creates a Home Screen shortcut
+   to this page — not a store app. Hidden inside the native shells and when the
+   page is already running from the Home Screen. */
 let deferredInstall=null;
 
 function isStandalone(){
@@ -2016,29 +1999,14 @@ function isMobileBrowser(){
   const ua=navigator.userAgent||'';
   return /Android|Mobile|webOS|BlackBerry|IEMobile|Opera Mini/i.test(ua);
 }
-function installDismissed(){
-  try{return localStorage.getItem(INSTALL_DISMISS_KEY)==='1';}catch(_){return false;}
-}
-function dismissInstall(){
-  try{localStorage.setItem(INSTALL_DISMISS_KEY,'1');}catch(_){}
-  const bar=document.getElementById('installBar');
-  if(bar) bar.hidden=true;
-  document.body.style.paddingBottom='';
-  closeInstallHowto();
-}
 function refreshInstallUI(){
+  const sec=document.getElementById('installSec');
+  if(!sec) return;
   const installed=isStandalone();
   const canPrompt=!!deferredInstall;
-  const offer=!installed&&(canPrompt||isMobileBrowser());
-
-  const bar=document.getElementById('installBar');
-  if(bar){
-    const barHint=document.getElementById('installBarHint');
-    if(barHint) barHint.textContent='Creates a shortcut to this page.';
-    bar.hidden=!(offer&&!installDismissed());
-    // The bar floats over the list, so give the last row somewhere to scroll to.
-    document.body.style.paddingBottom=bar.hidden?'':'96px';
-  }
+  // Offer on phones always; on desktop only when the browser has an install prompt ready.
+  const offer=!isNativeShell()&&!installed&&(canPrompt||isMobileBrowser());
+  sec.hidden=!offer;
 }
 function shareIconSvg(){
   return '<svg class="share-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4"/><path d="M8 7l4-4 4 4"/><path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg>';
@@ -2081,7 +2049,6 @@ window.addEventListener('beforeinstallprompt',e=>{
 });
 window.addEventListener('appinstalled',()=>{
   deferredInstall=null;
-  try{localStorage.removeItem(INSTALL_DISMISS_KEY);}catch(_){}
   closeInstallHowto();
   refreshInstallUI();
   toast('Added to Home Screen');
@@ -2090,6 +2057,7 @@ async function runInstall(){
   if(deferredInstall){
     const prompt=deferredInstall;
     deferredInstall=null;
+    closeSettings();
     try{
       prompt.prompt();
       await prompt.userChoice;
@@ -2098,6 +2066,7 @@ async function runInstall(){
     return;
   }
   // Safari and browsers without an install API: show the Home Screen steps.
+  closeSettings();
   openInstallHowto();
 }
 function registerServiceWorker(){
@@ -2106,9 +2075,7 @@ function registerServiceWorker(){
   // Capacitor defines window.Capacitor in plain browsers too, so ask the platform rather
   // than testing for the global. The shells already ship the app; caching it there is
   // pointless and the Android shell serves from https://localhost.
-  const cap=window.Capacitor;
-  const native=!!(cap&&typeof cap.isNativePlatform==='function'&&cap.isNativePlatform());
-  if(native||location.hostname==='localhost') return;
+  if(isNativeShell()||location.hostname==='localhost') return;
   navigator.serviceWorker.register('sw.js',{scope:'./'}).catch(()=>{});
   // A new deploy claims the page; reload once so the technician is not stuck on a stale
   // shell that still paints black photo husks from an older build.
@@ -2228,8 +2195,7 @@ function wireSettingsOnce(){
   const up=document.getElementById('setUploadPics'); if(up) up.onclick=()=>uploadAllPictures();
   const sy=document.getElementById('setSyncNow');
   if(sy) sy.onclick=()=>{if(!cfSignedIn()){alert('Sign in first.');return;}syncTick();};
-  const ibGo=document.getElementById('installBarGo'); if(ibGo) ibGo.onclick=()=>runInstall();
-  const ibNo=document.getElementById('installBarNo'); if(ibNo) ibNo.onclick=()=>dismissInstall();
+  const addHome=document.getElementById('setAddHome'); if(addHome) addHome.onclick=()=>runInstall();
   const ihClose=document.getElementById('installHowtoClose'); if(ihClose) ihClose.onclick=()=>closeInstallHowto();
   const ihOk=document.getElementById('installHowtoOk'); if(ihOk) ihOk.onclick=()=>closeInstallHowto();
   const ih=document.getElementById('installHowto');
@@ -2240,6 +2206,7 @@ function wireSettingsOnce(){
   refreshCfStatus();
   refreshScreenTimeoutUI();
   refreshSyncStatus();
+  refreshInstallUI();
 }
 
 (async function(){await loadAll();wireSettingsOnce();render();refreshCfStatus();refreshInstallUI();registerServiceWorker();applyScreenTimeout(getScreenTimeoutMins(),false);startSync();})();

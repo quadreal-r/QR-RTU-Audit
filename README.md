@@ -33,10 +33,10 @@ See:
 
 ## Installing from a link (Home Screen shortcut)
 
-Anyone sent the tracker URL can add a Home Screen shortcut without an app store:
+Anyone sent the tracker URL can add a Home Screen shortcut without an app store. Open **Settings → Add To Home Screen**:
 
-- **Chrome / Edge (Android, desktop)** — an "Add to Home Screen" bar appears at the bottom and uses the browser's own prompt when available.
-- **iPhone / iPad** — Safari has no install API, so tapping **Add** shows the Share → Add to Home Screen steps.
+- **Chrome / Edge (Android, desktop)** — uses the browser's own install prompt when available.
+- **iPhone / iPad** — Safari has no install API, so the button shows the Share → Add to Home Screen steps.
 
 `manifest.webmanifest` and `sw.js` live at the repo root and are copied into `www/` by `npm run build:web`, which also stamps `APP_VER` into the service worker's cache name so a deploy can never be served from a stale cache. Icons are generated from the iOS app icon by `scripts/make-pwa-icons.ps1`.
 

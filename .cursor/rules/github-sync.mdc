@@ -1,0 +1,21 @@
+---
+description: Commit and push finished work to GitHub on main
+alwaysApply: true
+---
+
+# Always update GitHub
+
+After finishing a user-requested change (including version bump and `npm run sync`), **commit and push to GitHub** unless the user says not to.
+
+## Steps
+
+1. Follow the usual git safety protocol (status, diff, log; no force-push; no amend unless allowed).
+2. Stage the relevant files (never secrets: `.env`, keystores, `.wrangler/`).
+3. Commit with a concise message focused on why.
+4. `git push -u origin HEAD` so `origin` matches local.
+
+## Notes
+
+- This overrides the default “only commit when asked” preference for this repo.
+- Still ask before destructive git operations (force push, hard reset, rewrite history).
+- Bump `APP_VER` / `BUILD` before the commit when source changed (see `version-bump.mdc`).
