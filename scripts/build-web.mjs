@@ -41,7 +41,12 @@ if (!appVer) {
   console.error('[build:web] could not read APP_VER from index.html');
   process.exit(1);
 }
-const sw = readFileSync(join(root, 'sw.js'), 'utf8').replace('__APP_VER__', appVer);
+const swPath = join(root, 'sw.js');
+const swSrc = readFileSync(swPath, 'utf8');
+const sw = swSrc.replace(/const VERSION = '[^']*';/, `const VERSION = '${appVer}';`);
+// GitHub Pages serves the root copy verbatim, so stamp it there too rather than only in
+// the build output — otherwise Pages ships a service worker stuck on an old cache name.
+if (sw !== swSrc) writeFileSync(swPath, sw);
 writeFileSync(join(www, 'sw.js'), sw);
 console.log(`[build:web] wrote sw.js (${appVer})`);
 

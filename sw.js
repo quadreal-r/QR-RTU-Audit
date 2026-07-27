@@ -9,8 +9,10 @@
  * readable out of the Cache Storage of a shared or lost device, so requests to any other
  * origin are passed straight through and never touched.
  */
-// build:web substitutes APP_VER here, so a deploy always lands in a fresh cache.
-const VERSION = '__APP_VER__';
+// Rewritten by build:web from APP_VER in index.html, so a deploy always lands in a fresh
+// cache. Kept literal rather than a placeholder because GitHub Pages serves this file
+// straight from the repo root, without a build step.
+const VERSION = 'v1.1.56';
 const CACHE = 'rtu-shell-' + VERSION;
 
 const SHELL = [
