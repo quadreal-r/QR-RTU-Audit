@@ -423,8 +423,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.71';
-const BUILD=82;
+const APP_VER='v1.1.72';
+const BUILD=83;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function isNativeShell(){
@@ -2177,7 +2177,15 @@ async function uploadAllPictures(){
     }catch(e){fail++;lastErr=(e&&e.message)||'network error';}
   }
   if(ok) syncNow();
-  if(prog) prog.textContent='Done — '+ok+' uploaded'+(fail?', '+fail+' failed'+(lastErr?': '+lastErr':'')+'.':'.');
+  if(prog){
+    let msg='Done — '+ok+' uploaded.';
+    if(fail){
+      msg='Done — '+ok+' uploaded, '+fail+' failed';
+      if(lastErr) msg+=': '+lastErr;
+      msg+='.';
+    }
+    prog.textContent=msg;
+  }
   toast(ok+' picture'+(ok===1?'':'s')+' uploaded');
 }
 function wireSettingsOnce(){
