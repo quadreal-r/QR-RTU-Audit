@@ -314,7 +314,7 @@
         <h3>Cloudflare account</h3>
         <div class="status" id="cfStatus">Signed out</div>
         <div id="cfLoginBox">
-          <input id="cfPassword" type="password" placeholder="Sign-in password" autocomplete="current-password">
+          <input id="cfPassword" type="password" placeholder="Sign-in password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false">
           <div class="rowbtns" style="margin-top:8px">
             <button type="button" class="btn pri" id="cfSignIn">Sign in</button>
           </div>
@@ -378,8 +378,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.53';
-const BUILD=64;
+const APP_VER='v1.1.54';
+const BUILD=65;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function cfGetToken(){try{return sessionStorage.getItem(CF_SESSION_KEY)||'';}catch(_){return '';}}
@@ -1789,11 +1789,14 @@ function refreshCfStatus(){
 }
 async function cfSignIn(){
   const input=document.getElementById('cfPassword');
-  const password=(input&&input.value)||'';
+  // Phone keyboards and paste routinely add an invisible trailing space, which the
+  // server correctly rejects and the technician reads as "the right password failed".
+  const password=((input&&input.value)||'').trim();
   if(!password){alert('Enter the sign-in password.');return;}
   try{
     const res=await fetch(CF_API+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password})});
-    if(cfClearSessionOnUnauthorized(res)){alert('Sign-in failed');return;}
+    if(res.status===429){alert('Too many sign-in attempts from this network. Wait a minute, then try again.');return;}
+    if(cfClearSessionOnUnauthorized(res)){alert('That password was not recognised. It is case sensitive — check for a typo.');return;}
     const data=await res.json().catch(()=>({}));
     if(!res.ok||!data.token){alert(data.error||'Sign-in failed');return;}
     cfSetToken(data.token);
