@@ -261,6 +261,9 @@
   .btn:active{transform:translateY(1px)}
   .btn.pri{background:var(--qr-blue);border-color:var(--qr-blue);color:#fff}
   .btn.pri:hover{background:var(--qr-blue-2);color:#fff}
+  .btn.danger{border-color:var(--bad);color:var(--bad)}
+  .btn.danger:hover{background:#FCEDED;color:var(--bad);border-color:var(--bad)}
+  .btn:disabled{opacity:.55;cursor:not-allowed;transform:none}
 
   footer{text-align:center;color:var(--faint);font-size:11.5px;line-height:1.7;padding-bottom:20px}
 
@@ -381,6 +384,18 @@
         <input id="setImportFile" type="file" accept="application/json,.json" hidden>
       </div>
       <div class="sec">
+        <h3>New audit</h3>
+        <p style="margin:0;font-size:12px;color:var(--muted);line-height:1.45">Clears stickers, notes and photo progress on this device and in the shared database so every building starts blank. Cloudflare picture files stay in the bucket.</p>
+        <div class="pwwrap">
+          <input id="resetPassword" type="password" placeholder="Confirm with sign-in password" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
+          <button type="button" class="pwshow" id="resetPwToggle" aria-pressed="false" aria-label="Show password" title="Show password">Show</button>
+        </div>
+        <div class="rowbtns" style="margin-top:8px">
+          <button type="button" class="btn danger" id="setResetAudit">Start new audit</button>
+        </div>
+        <div class="upload-prog" id="resetProg"></div>
+      </div>
+      <div class="sec">
         <h3>Screen timeout</h3>
         <div class="opt-row" id="screenTimeoutOpts">
           <button type="button" class="opt" data-mins="0">Default</button>
@@ -423,8 +438,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.75';
-const BUILD=86;
+const APP_VER='v1.1.76';
+const BUILD=87;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function isNativeShell(){
@@ -656,6 +671,15 @@ function photoDel(key){
     tx.oncomplete=()=>{invalidateLocalPhotoCache();resolve(true);};
     tx.onerror=()=>reject(tx.error);
   }));
+}
+/** Wipe every local photo blob. Does not touch Cloudflare R2. */
+function photoClearAllLocal(){
+  return idbOpen().then(db=>new Promise((resolve,reject)=>{
+    const tx=db.transaction(PHOTO_STORE,'readwrite');
+    tx.objectStore(PHOTO_STORE).clear();
+    tx.oncomplete=()=>{invalidateLocalPhotoCache();resolve(true);};
+    tx.onerror=()=>reject(tx.error);
+  })).catch(()=>false);
 }
 /** Keys look like buildingId|rtuKey|slot — used to scope on-device counts per property. */
 function photoKeyBuildingId(key){
@@ -1870,6 +1894,107 @@ async function syncNow(){
   }
 }
 
+/** Push every queued change before a destructive reset returns to the UI. */
+async function drainSyncQueue(){
+  let guard=0;
+  while(guard++<40){
+    if(!syncQueue.size && !syncBusy) return true;
+    if(!cfSignedIn()||navigator.onLine===false) return false;
+    if(syncBusy){
+      await new Promise(r=>setTimeout(r,150));
+      continue;
+    }
+    const left=syncQueue.size;
+    await syncNow();
+    if(syncFailed) return false;
+    if(!syncQueue.size && !syncBusy) return true;
+    if(syncQueue.size===left) await new Promise(r=>setTimeout(r,250));
+  }
+  return syncQueue.size===0 && !syncBusy;
+}
+
+/**
+ * Brand-new audit: wipe stickers, notes and photo progress locally and in the shared
+ * Supabase table. Local IndexedDB blobs go too. Cloudflare R2 objects are never deleted.
+ */
+async function startNewAudit(){
+  const pwEl=document.getElementById('resetPassword');
+  const prog=document.getElementById('resetProg');
+  const btn=document.getElementById('setResetAudit');
+  const password=((pwEl&&pwEl.value)||'').trim();
+  if(!password){
+    alert('Enter the sign-in password to confirm a new audit.');
+    if(pwEl) pwEl.focus();
+    return;
+  }
+  if(!confirm('Start a brand new audit?\n\nThis clears stickers, notes and photo check-ins on this device and in the shared database.\n\nCloudflare picture files are NOT deleted.')) return;
+
+  if(btn) btn.disabled=true;
+  if(prog) prog.textContent='Checking password…';
+  try{
+    const res=await fetch(CF_API+'/api/login',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({password})
+    });
+    if(res.status===429){
+      if(prog) prog.textContent='Too many attempts — wait a minute and try again.';
+      alert('Too many sign-in attempts from this network. Wait a minute, then try again.');
+      return;
+    }
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok||!data.token){
+      if(prog) prog.textContent='Password not recognised.';
+      alert('That password was not recognised. It is case sensitive — check for a typo.');
+      return;
+    }
+    cfSetToken(data.token);
+    refreshCfStatus();
+
+    if(prog) prog.textContent='Clearing local progress…';
+    saveUploadQueue([]);
+    const now=Date.now();
+    const buildings=new Set();
+    DATA.forEach(p=>p.buildings.forEach(b=>b.rtus.forEach(r=>{
+      const o=rec(b.id,r.k).r[r.k];
+      o.s=false;
+      o.c=false;
+      o.ph=false;
+      o.n='';
+      o.p=[false,false,false,false];
+      o.f=[null,null,null,null];
+      if(o.files&&typeof o.files==='object') delete o.files;
+      o.u=now;
+      syncQueue.add(b.id+SEP+r.k);
+      buildings.add(b.id);
+    })));
+    buildings.forEach(id=>{
+      try{_set(PREFIX+id,JSON.stringify(mem[id]||{}));}catch(_){}
+    });
+    await photoClearAllLocal();
+    queueHeroPhotoRefresh();
+
+    if(prog) prog.textContent='Syncing clear to shared database…';
+    const ok=await drainSyncQueue();
+    if(pwEl) pwEl.value='';
+    view={level:'props',pi:null};
+    render();
+    refreshSyncStatus();
+    if(ok){
+      if(prog) prog.textContent='New audit started. Cloudflare pictures were kept.';
+      toast('New audit started');
+    }else{
+      if(prog) prog.textContent='Local progress cleared. Shared sync did not finish — tap Sync now when online.';
+      alert('Progress was cleared on this device, but the shared database sync did not finish. Stay online and tap Sync now so other devices pick up the blank audit.');
+    }
+  }catch(_){
+    if(prog) prog.textContent='Could not reach Cloudflare to confirm the password.';
+    alert('Could not reach Cloudflare. Check your connection and try again.');
+  }finally{
+    if(btn) btn.disabled=false;
+  }
+}
+
 function syncAgoLabel(ts){
   const s=Math.max(0,Math.round((Date.now()-ts)/1000));
   if(s<60) return 'just now';
@@ -2306,6 +2431,21 @@ function wireSettingsOnce(){
   const exp=document.getElementById('setExportDb'); if(exp) exp.onclick=()=>{backup(); toast('Database exported');};
   const imp=document.getElementById('setImportDb'); const file=document.getElementById('setImportFile');
   if(imp&&file){imp.onclick=()=>file.click(); file.onchange=restore;}
+  const resetBtn=document.getElementById('setResetAudit'); if(resetBtn) resetBtn.onclick=()=>startNewAudit();
+  const resetPw=document.getElementById('resetPassword');
+  const resetPwToggle=document.getElementById('resetPwToggle');
+  if(resetPwToggle&&resetPw){
+    resetPwToggle.onclick=()=>{
+      const show=resetPw.type==='password';
+      resetPw.type=show?'text':'password';
+      resetPwToggle.textContent=show?'Hide':'Show';
+      resetPwToggle.setAttribute('aria-pressed',show?'true':'false');
+      const label=show?'Hide password':'Show password';
+      resetPwToggle.setAttribute('aria-label',label);
+      resetPwToggle.title=label;
+    };
+  }
+  if(resetPw) resetPw.addEventListener('keydown',e=>{if(e.key==='Enter') startNewAudit();});
   const up=document.getElementById('setUploadPics'); if(up) up.onclick=()=>uploadAllPictures();
   const sy=document.getElementById('setSyncNow');
   if(sy) sy.onclick=()=>{if(!cfSignedIn()){alert('Sign in first.');return;}syncTick();};
