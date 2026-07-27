@@ -203,8 +203,6 @@
   .photos.pref .ang.has{border-color:var(--good)}
   .ang.has img{width:100%;height:100%;object-fit:cover;object-position:center;display:block;pointer-events:none;border-radius:0}
   .ang .ph-slot{position:absolute;left:3px;top:3px;z-index:1;min-width:14px;height:14px;padding:0 3px;border-radius:999px;background:rgba(11,18,32,.72);color:#fff;font-size:9px;font-weight:800;display:grid;place-items:center;pointer-events:none}
-  .ang-del{position:absolute;right:1px;top:1px;z-index:2;width:22px;height:22px;border:none;border-radius:999px;background:rgba(176,28,28,.92);color:#fff;font-size:15px;font-weight:800;line-height:1;cursor:pointer;display:grid;place-items:center;padding:0;box-shadow:0 2px 6px rgba(0,0,0,.28)}
-  .ang-del:active{transform:scale(.94)}
   .ang.has:active{transform:translateY(1px)}
   .ang.has:focus-visible{outline:2.5px solid var(--qr-blue);outline-offset:2px}
   .phint{margin-left:auto;font-size:12px;font-weight:800;color:var(--faint);white-space:nowrap;flex:0 0 auto}
@@ -370,8 +368,8 @@
 <script src="native-bridge.js"></script>
 <script src="piexif.js"></script>
 <script>
-const APP_VER='v1.1.45';
-const BUILD=56;
+const APP_VER='v1.1.46';
+const BUILD=57;
 const CF_API='https://rtu-pictures-api.quadreal-rpiwin.workers.dev';
 const CF_SESSION_KEY='rtu_cf_session_token';
 function cfGetToken(){try{return sessionStorage.getItem(CF_SESSION_KEY)||'';}catch(_){return '';}}
@@ -1062,7 +1060,7 @@ function photosBlockHTML(o){
   const angs=Array.from({length:PHOTO_MAX},(_,i)=>{
     const on=legacy?(i<PHOTO_NEED):!!slots[i];
     if(on){
-      return `<a class="ang has" data-slot="${i}" href="#" aria-label="View photo ${i+1} of ${PHOTO_MAX}"><span class="ph-slot">${i+1}</span><button type="button" class="ang-del" data-del="${i}" aria-label="Delete photo ${i+1}">&times;</button></a>`;
+      return `<a class="ang has" data-slot="${i}" href="#" aria-label="View photo ${i+1} of ${PHOTO_MAX}"><span class="ph-slot">${i+1}</span></a>`;
     }
     return `<span class="ang" data-slot="${i}" aria-hidden="true"><span class="ph-slot">${i+1}</span></span>`;
   }).join('');
@@ -1265,23 +1263,15 @@ async function paintPhotoThumbs(row,id,k,o){
   }
   wrap.innerHTML=Array.from({length:PHOTO_MAX},(_,i)=>{
     const has=legacy?(i<PHOTO_NEED):!!slots[i];
-    if(has) return `<a class="ang has" data-slot="${i}" href="#" aria-label="View photo ${i+1} of ${PHOTO_MAX}"><span class="ph-slot">${i+1}</span><button type="button" class="ang-del" data-del="${i}" aria-label="Delete photo ${i+1}">&times;</button></a>`;
+    if(has) return `<a class="ang has" data-slot="${i}" href="#" aria-label="View photo ${i+1} of ${PHOTO_MAX}"><span class="ph-slot">${i+1}</span></a>`;
     return `<span class="ang" data-slot="${i}" aria-hidden="true"><span class="ph-slot">${i+1}</span></span>`;
   }).join('');
   wrap.querySelectorAll('.ang.has').forEach(el=>{
     el.addEventListener('click',e=>{
-      if(e.target.closest('.ang-del')) return;
       e.preventDefault();
       const slot=+el.dataset.slot;
       if(!el.dataset.blobUrl) return;
       openPhotoViewer(el.dataset.blobUrl,{id,k,slot,row,bi,b,r,file});
-    });
-  });
-  wrap.querySelectorAll('.ang-del').forEach(btn=>{
-    btn.addEventListener('click',e=>{
-      e.preventDefault();
-      e.stopPropagation();
-      clearPhotoSlot(id,k,+btn.dataset.del,row,bi,b);
     });
   });
   for(const el of wrap.querySelectorAll('.ang.has')){
