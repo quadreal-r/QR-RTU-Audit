@@ -9,7 +9,7 @@ and incident response.
 | Surface | Trust | Primary threats |
 | --- | --- | --- |
 | Cloudflare Worker (`rtu-pictures-api`) | **Only trust boundary** | Brute-force shared password, token theft/reuse, oversized or hostile uploads to R2, cross-origin abuse via wildcard CORS |
-| `index.html` (web + embedded copies) | Untrusted (fully readable) | XSS via notes / backup restore, session token theft from `sessionStorage`, client-side bypass of “validation” |
+| `index.html` (web + embedded copies) | Untrusted (fully readable) | XSS via notes / backup restore, session token theft from `localStorage`, client-side bypass of “validation” |
 | Android WebView shell | Untrusted host for the SPA | Remote debugging in release, mixed content, over-broad JS bridge / permissions, cleartext |
 | iOS WKWebView shell | Untrusted host for the SPA | Local scheme path traversal, inspectable WebView in release, string-built `evaluateJavaScript`, wildcard CORS on local assets |
 | R2 bucket `rtu-pictures` | Confidential storage | Public bucket URL, key overwrite / collision, retention of GPS-bearing photos |
@@ -31,7 +31,7 @@ Out of scope for this app: payment card data, end-customer PII databases, multi-
 | Audit photos + GPS EXIF | IndexedDB locally; R2 after upload | **Sensitive** | GPS pins rooftop work; treat as the sensitive core. A photo now spreads to every signed-in device that opens that RTU, so each one holds a cached copy |
 | Shared audit progress (sticker, photo count, notes) | `public.rtu_audit_state` in Supabase, via the Worker | Confidential | Same sensitivity as the local notes it mirrors; devices never reach Postgres directly |
 | Photo object keys | `rtu_audit_state.photo_files` | Confidential | Names only, never image bytes. Each is re-validated against the audit-photo pattern in the Worker so sync cannot address other objects in the shared bucket |
-| Session Bearer token | `sessionStorage` (`rtu_cf_session_token`) | Credential | Short-lived; clear on 401; revoke fleet-wide via `TOKEN_EPOCH` |
+| Session Bearer token | `localStorage` (`rtu_cf_session_token`) | Credential | 90-day TTL; clear on Sign out / 401; revoke fleet-wide via `TOKEN_EPOCH` |
 | `AUTH_PASSWORD` / `AUTH_SECRET` / `TOKEN_EPOCH` | Cloudflare Worker secrets only | **Secret** | Never in git, never in client |
 
 There is no customer PII store and no payment data in this product.
@@ -66,7 +66,7 @@ Use a new random high-entropy value for `AUTH_SECRET` and a monotonically increa
 3. Redeploy if your Worker reads the binding only at deploy time for vars; secrets are available on the next request.
 4. All previously issued Bearer tokens fail verification. Staff must sign in again with `AUTH_PASSWORD`.
 
-Also clear `rtu_cf_session_token` from `sessionStorage` on any Worker `401` in the client.
+Also clear `rtu_cf_session_token` from `localStorage` on any Worker `401` in the client.
 
 ## Vendored dependency: `piexif.js`
 

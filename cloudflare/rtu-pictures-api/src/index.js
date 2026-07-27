@@ -3,7 +3,9 @@
  * plus shared audit progress in Supabase (`public.rtu_audit_state`).
  */
 
-const TOKEN_TTL_HOURS = 8;
+// Long-lived so field staff stay signed in across days/weeks until Sign out.
+// Stolen tokens are still revoked fleet-wide by bumping TOKEN_EPOCH.
+const TOKEN_TTL_HOURS = 90 * 24;
 const MAX_UPLOAD_BYTES = 12 * 1024 * 1024; // 12 MB
 
 // Audit-state sync limits. A full portfolio is ~1100 RTUs, so a device that has been

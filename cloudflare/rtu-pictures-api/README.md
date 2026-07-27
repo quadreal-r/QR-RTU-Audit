@@ -5,7 +5,7 @@ Cloudflare Worker that authenticates field staff, uploads RTU audit photos to R2
 
 - Cloudflare account: **quadreal.rpiwin@gmail.com** (`ed62b8514615e386084ffd47455ec775`), pinned as `account_id` in `wrangler.jsonc`
 - URL: https://rtu-pictures-api.quadreal-rpiwin.workers.dev
-- Login: `POST /api/login` `{ "password": "..." }` → `{ token, expiresInHours }` (8h TTL)
+- Login: `POST /api/login` `{ "password": "..." }` → `{ token, expiresInHours }` (90-day TTL)
 - Session check: `GET /api/me` with `Authorization: Bearer <token>`
 - Upload: `PUT /api/upload/:filename` with `Authorization: Bearer <token>` and raw JPEG/PNG body (max 12 MB)
 - Download: `GET /api/photo/:filename` with `Authorization: Bearer <token>` → the JPEG bytes
@@ -102,7 +102,7 @@ retain capture EXIF (GPS, `DateTimeOriginal`, `Software`).
 | Control | Detail |
 | --- | --- |
 | Rate limits | Login: 8 req / 60s per `CF-Connecting-IP`. Upload: 60 req / 60s per SHA-256 of bearer token. Audit sync: 120 req / 60s per SHA-256 of bearer token. Download: 300 req / 60s per SHA-256 of bearer token, since opening one building can request a screenful of photos at once. Exceeded → `429` + `Retry-After: 60`. |
-| Auth | Constant-time password compare. `AUTH_SECRET` is **required** (no fallback to `AUTH_PASSWORD`). Tokens include `iat`, `jti`, and `TOKEN_EPOCH`; bumping the epoch revokes all sessions. TTL: **8 hours**. |
+| Auth | Constant-time password compare. `AUTH_SECRET` is **required** (no fallback to `AUTH_PASSWORD`). Tokens include `iat`, `jti`, and `TOKEN_EPOCH`; bumping the epoch revokes all sessions. TTL: **90 days**. |
 | CORS | Allowlist only: `https://rtu-qr-tracker.quadreal-rpiwin.workers.dev` and `https://quadreal-r.github.io` (desktop browsers), `capacitor://localhost` (iOS shell), `https://localhost` (Android shell, per `androidScheme: 'https'`), plus the legacy shells' `https://appassets.androidplatform.net` and `rtuapp://app`. Desktop origins are easy to forget because every surface loads the same `index.html` and differs only in where it is served from — leave one out and sign-in fails at the preflight, before the password is checked, which looks exactly like a wrong password. Note `quadreal-r.github.io` is shared by every Pages site on that account. Responses include `Vary: Origin` (no `*`). Live reload (`npm run dev:ios`) serves from a LAN address that is deliberately **not** allowlisted — sign-in and upload only work in a normal build. |
 | Uploads | Body ≤ 12 MB (Content-Length checked when present; Safari/iOS often omits it, so the Worker also streams with a hard cap). MIME from magic bytes (`FF D8 FF` / PNG signature) only — `415` otherwise. Keys are flat at the bucket root and must match the audit-photo pattern — `400` otherwise. Re-uploading the same RTU photo **overwrites in place** by design, so the pattern check is what stops a caller reaching objects outside that shape. |
 | Downloads | Requires a valid bearer token — the bucket stays private and no public URL is ever handed out. The requested name is stripped of any path and must match the audit-photo pattern, so a caller cannot read arbitrary objects out of a bucket shared with QR East Industrial. Unknown key → `404`. |

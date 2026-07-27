@@ -12,7 +12,7 @@ Three surfaces, no framework, no bundler:
 
 1. `index.html` — a single self-contained SPA (inline CSS/JS, base64 assets, embedded
    `DATA` inventory). Progress in `localStorage` (`qr_rtu_v3:*`), audit photos in
-   IndexedDB (`qr_rtu_photos_v1`), Cloudflare session token in `sessionStorage`.
+   IndexedDB (`qr_rtu_photos_v1`), Cloudflare session token in `localStorage`.
 2. Native Capacitor shells that embed a byte-identical copy of `index.html`: Android
    WebView (`android/`) and iOS WKWebView (`ios/`).
 3. `cloudflare/rtu-pictures-api` — a Worker that authenticates staff and streams photos
